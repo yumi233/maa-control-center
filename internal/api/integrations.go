@@ -16,6 +16,9 @@ import (
 )
 
 type ConfigPlan struct {
+	OwnerID      string            `json:"owner_id"`
+	CreatedBy    string            `json:"created_by"`
+	ApprovedBy   string            `json:"approved_by"`
 	ID           string            `json:"id"`
 	AccountID    string            `json:"account_id"`
 	AgentID      string            `json:"agent_id"`
@@ -37,7 +40,7 @@ type ConfigPlan struct {
 
 func (s *Server) integrationRoutes(m *http.ServeMux) {
 	m.HandleFunc("GET /api/v1/integrations", s.protect(func(w http.ResponseWriter, r *http.Request) {
-		v, e := s.Integrations.Load()
+		v, e := s.settingsFor(r).Load()
 		if e != nil {
 			problem(w, 503, "settings_unavailable", e.Error())
 			return
@@ -49,7 +52,7 @@ func (s *Server) integrationRoutes(m *http.ServeMux) {
 		if !decode(w, r, &v) {
 			return
 		}
-		if e := s.Integrations.Save(v); e != nil {
+		if e := s.settingsFor(r).Save(v); e != nil {
 			problem(w, 422, "settings_invalid", e.Error())
 			return
 		}
@@ -61,7 +64,7 @@ func (s *Server) integrationRoutes(m *http.ServeMux) {
 			problem(w, 429, "rate_limit", "模型测试过于频繁")
 			return
 		}
-		cfg, e := s.Integrations.Load()
+		cfg, e := s.settingsFor(r).Load()
 		if e != nil {
 			problem(w, 503, "settings_unavailable", e.Error())
 			return
@@ -88,7 +91,7 @@ func (s *Server) integrationRoutes(m *http.ServeMux) {
 			return
 		}
 		id := token()
-		cfg, err := s.Integrations.Load()
+		cfg, err := s.settingsFor(r).Load()
 		if err != nil {
 			problem(w, 503, "settings_unavailable", err.Error())
 			return
@@ -101,7 +104,7 @@ func (s *Server) integrationRoutes(m *http.ServeMux) {
 			problem(w, 422, "channel_disabled", "请先启用并保存至少一个通知渠道")
 			return
 		}
-		e := s.Notifications.Queue(notify.Facts{ID: id, Kind: "test", Account: "管理中心", State: "test", Time: time.Now().UTC().Format(time.RFC3339), Detail: "这是一条管理员主动发送的连接测试", Source: "通知测试按钮"})
+		e := s.Notifications.Queue(notify.Facts{OwnerID: s.currentUser(r).ID, ID: id, Kind: "test", Account: "管理中心", State: "test", Time: time.Now().UTC().Format(time.RFC3339), Detail: "这是一条用户主动发送的连接测试", Source: "通知测试按钮"})
 		if e != nil {
 			problem(w, 422, "queue_failed", e.Error())
 			return
@@ -120,7 +123,7 @@ func (s *Server) integrationRoutes(m *http.ServeMux) {
 			problem(w, 422, "confirmation_required", "重试可能重复发送，请先核实收件端")
 			return
 		}
-		if e := s.Notifications.Retry(r.PathValue("id")); e != nil {
+		if e := s.Notifications.RetryFor(r.PathValue("id"), s.currentUser(r).ID); e != nil {
 			problem(w, 409, "not_retryable", "该通知无法重试")
 			return
 		}
@@ -129,10 +132,15 @@ func (s *Server) integrationRoutes(m *http.ServeMux) {
 	m.HandleFunc("GET /api/v1/assistant/rules", s.protect(func(w http.ResponseWriter, r *http.Request) { send(w, 200, rules.Catalog) }))
 	m.HandleFunc("POST /api/v1/accounts/{id}/assistant/propose", s.protect(s.proposeConfig))
 	m.HandleFunc("POST /api/v1/accounts/{id}/config/preview", s.protect(s.previewConfig))
-	m.HandleFunc("GET /api/v1/config/plans", s.protect(func(w http.ResponseWriter, r *http.Request) { p, e := s.plans(""); s.result(w, p, e) }))
+	m.HandleFunc("GET /api/v1/config/plans", s.protect(func(w http.ResponseWriter, r *http.Request) { p, e := s.visiblePlans(r, ""); s.result(w, p, e) }))
 	m.HandleFunc("POST /api/v1/config/plans/{id}/approve", s.protect(s.approveConfig))
 	m.HandleFunc("POST /api/v1/config/plans/{id}/rollback", s.protect(s.rollbackConfig))
 	m.HandleFunc("POST /api/v1/config/plans/{id}/cancel", s.protect(func(w http.ResponseWriter, r *http.Request) {
+		ps, e := s.visiblePlans(r, r.PathValue("id"))
+		if e != nil || len(ps) != 1 {
+			problem(w, 404, "not_found", "方案不存在")
+			return
+		}
 		res, e := s.Store.DB.Exec("UPDATE config_plans SET state='cancelled' WHERE id=? AND state IN ('draft','queued')", r.PathValue("id"))
 		if e != nil {
 			problem(w, 500, "database_error", "无法取消方案")
@@ -193,7 +201,7 @@ func (s *Server) proposeConfig(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "invalid_intent", "请输入明确需求并选择配置或排班")
 		return
 	}
-	cfg, e := s.Integrations.Load()
+	cfg, e := s.settingsFor(r).Load()
 	if e != nil {
 		problem(w, 503, "settings_unavailable", e.Error())
 		return
@@ -219,7 +227,7 @@ func (s *Server) proposeConfig(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "proposal_invalid", "模型解释过长")
 		return
 	}
-	s.createConfigPlan(w, a, in.Target, p.Operations, p.Summary)
+	s.createConfigPlan(w, r, a, in.Target, p.Operations, p.Summary)
 }
 func (s *Server) previewConfig(w http.ResponseWriter, r *http.Request) {
 	a := s.account(w, r)
@@ -233,9 +241,9 @@ func (s *Server) previewConfig(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	s.createConfigPlan(w, a, in.Target, in.Operations, "管理员通过结构化操作建立的差异预览")
+	s.createConfigPlan(w, r, a, in.Target, in.Operations, "用户通过结构化操作建立的差异预览")
 }
-func (s *Server) createConfigPlan(w http.ResponseWriter, a *model.Account, target string, ops []rules.Operation, summary string) {
+func (s *Server) createConfigPlan(w http.ResponseWriter, r *http.Request, a *model.Account, target string, ops []rules.Operation, summary string) {
 	b, e := s.bound(a)
 	if e != nil {
 		problem(w, 422, "not_ready", e.Error())
@@ -263,7 +271,7 @@ func (s *Server) createConfigPlan(w http.ResponseWriter, a *model.Account, targe
 		problem(w, 422, "missing_fingerprint", "配置指纹无效")
 		return
 	}
-	p := ConfigPlan{ID: token(), AccountID: a.ID, AgentID: b.AgentID, InstanceID: b.InstanceID, ProfileID: b.ProfileID, Target: target, BeforeHash: hash, Operations: ops, Diff: result.Diff, Summary: summary, RulesVersion: rules.Version, State: "draft", CreatedAt: time.Now().UTC().Format(time.RFC3339), ExpiresAt: time.Now().Add(10 * time.Minute).UTC().Format(time.RFC3339)}
+	p := ConfigPlan{OwnerID: a.OwnerID, CreatedBy: s.currentUser(r).ID, ApprovedBy: "admin", ID: token(), AccountID: a.ID, AgentID: b.AgentID, InstanceID: b.InstanceID, ProfileID: b.ProfileID, Target: target, BeforeHash: hash, Operations: ops, Diff: result.Diff, Summary: summary, RulesVersion: rules.Version, State: "draft", CreatedAt: time.Now().UTC().Format(time.RFC3339), ExpiresAt: time.Now().Add(10 * time.Minute).UTC().Format(time.RFC3339)}
 	if e = s.insertPlan(p); e != nil {
 		problem(w, 500, "database_error", "无法保存预览方案")
 		return
@@ -271,19 +279,53 @@ func (s *Server) createConfigPlan(w http.ResponseWriter, a *model.Account, targe
 	send(w, 201, p)
 }
 func (s *Server) insertPlan(p ConfigPlan) error {
+	if p.OwnerID == "" {
+		_ = s.Store.DB.QueryRow("SELECT owner_id FROM accounts WHERE id=?", p.AccountID).Scan(&p.OwnerID)
+	}
+	if p.CreatedBy == "" {
+		p.CreatedBy = "admin"
+	}
+	if p.ApprovedBy == "" {
+		p.ApprovedBy = "admin"
+	}
+
 	o, _ := json.Marshal(p.Operations)
 	d, _ := json.Marshal(p.Diff)
-	_, e := s.Store.DB.Exec("INSERT INTO config_plans(id,account_id,agent_id,instance_id,profile_id,target,before_hash,operations,diff,summary,rules_version,state,created_at,expires_at,rollback_of) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", p.ID, p.AccountID, p.AgentID, p.InstanceID, p.ProfileID, p.Target, p.BeforeHash, string(o), string(d), p.Summary, p.RulesVersion, p.State, p.CreatedAt, p.ExpiresAt, p.RollbackOf)
+	res, e := s.Store.DB.Exec("INSERT INTO config_plans(id,account_id,agent_id,instance_id,profile_id,target,before_hash,operations,diff,summary,rules_version,state,created_at,expires_at,rollback_of,owner_id,created_by,approved_by) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM accounts WHERE id=? AND owner_id=?) AND EXISTS (SELECT 1 FROM users WHERE id=? AND disabled=0)", p.ID, p.AccountID, p.AgentID, p.InstanceID, p.ProfileID, p.Target, p.BeforeHash, string(o), string(d), p.Summary, p.RulesVersion, p.State, p.CreatedAt, p.ExpiresAt, p.RollbackOf, p.OwnerID, p.CreatedBy, p.ApprovedBy, p.AccountID, p.OwnerID, p.CreatedBy)
+	if e == nil {
+		n, _ := res.RowsAffected()
+		if n != 1 {
+			return fmt.Errorf("账号归属或用户权限已变化")
+		}
+	}
 	return e
 }
-func (s *Server) plans(id string) ([]ConfigPlan, error) {
-	query := "SELECT id,account_id,agent_id,instance_id,profile_id,target,before_hash,operations,diff,summary,rules_version,state,created_at,expires_at,rollback_of,after_hash,receipt FROM config_plans"
+func (s *Server) plans(id string) ([]ConfigPlan, error) { return s.scopedPlans(id, "") }
+func (s *Server) scopedPlans(id, owner string) ([]ConfigPlan, error) {
+	return s.listPlans(id, owner, false)
+}
+func (s *Server) listPlans(id, owner string, delivery bool) ([]ConfigPlan, error) {
+	query := "SELECT id,account_id,agent_id,instance_id,profile_id,target,before_hash,operations,diff,summary,rules_version,state,created_at,expires_at,rollback_of,after_hash,receipt,owner_id,created_by,approved_by FROM config_plans"
 	args := []any{}
 	if id != "" {
 		query += " WHERE id=?"
 		args = append(args, id)
 	}
-	query += " ORDER BY created_at DESC LIMIT 100"
+	if owner != "" {
+		if id != "" {
+			query += " AND"
+		} else {
+			query += " WHERE"
+		}
+		query += " owner_id=? AND EXISTS (SELECT 1 FROM accounts a WHERE a.id=config_plans.account_id AND a.owner_id=?)"
+		args = append(args, owner, owner)
+	}
+	if delivery {
+		query += " WHERE state IN ('queued','dispatched') AND agent_id=? ORDER BY created_at ASC LIMIT 100"
+		args = append(args, s.cfg.AgentID)
+	} else {
+		query += " ORDER BY created_at DESC LIMIT 100"
+	}
 	rows, e := s.Store.DB.Query(query, args...)
 	if e != nil {
 		return nil, e
@@ -293,7 +335,7 @@ func (s *Server) plans(id string) ([]ConfigPlan, error) {
 	for rows.Next() {
 		var p ConfigPlan
 		var o, d string
-		if e = rows.Scan(&p.ID, &p.AccountID, &p.AgentID, &p.InstanceID, &p.ProfileID, &p.Target, &p.BeforeHash, &o, &d, &p.Summary, &p.RulesVersion, &p.State, &p.CreatedAt, &p.ExpiresAt, &p.RollbackOf, &p.AfterHash, &p.Receipt); e != nil {
+		if e = rows.Scan(&p.ID, &p.AccountID, &p.AgentID, &p.InstanceID, &p.ProfileID, &p.Target, &p.BeforeHash, &o, &d, &p.Summary, &p.RulesVersion, &p.State, &p.CreatedAt, &p.ExpiresAt, &p.RollbackOf, &p.AfterHash, &p.Receipt, &p.OwnerID, &p.CreatedBy, &p.ApprovedBy); e != nil {
 			return nil, e
 		}
 		if json.Unmarshal([]byte(o), &p.Operations) != nil || json.Unmarshal([]byte(d), &p.Diff) != nil {
@@ -310,6 +352,9 @@ func (s *Server) planAccount(p ConfigPlan) (*model.Account, error) {
 	}
 	for _, v := range a {
 		if v.ID == p.AccountID {
+			if v.OwnerID != p.OwnerID || !s.activeUser(p.OwnerID) || !s.mayManage(p.CreatedBy, p.OwnerID) {
+				return nil, fmt.Errorf("账号归属或用户权限已变化")
+			}
 			b, e := s.bound(&v)
 			if e != nil {
 				return nil, e
@@ -329,7 +374,7 @@ func (s *Server) approveConfig(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	ps, e := s.plans(r.PathValue("id"))
+	ps, e := s.visiblePlans(r, r.PathValue("id"))
 	if e != nil || len(ps) != 1 {
 		problem(w, 404, "not_found", "方案不存在")
 		return
@@ -365,7 +410,7 @@ func (s *Server) approveConfig(w http.ResponseWriter, r *http.Request) {
 		problem(w, 409, "agent_write_disabled", "Windows 端尚未启用受控配置写入")
 		return
 	}
-	res, e := s.Store.DB.Exec("UPDATE config_plans SET state='queued',approved_at=? WHERE id=? AND state='draft'", time.Now().UTC().Format(time.RFC3339), p.ID)
+	res, e := s.Store.DB.Exec("UPDATE config_plans SET state='queued',approved_at=?,approved_by=? WHERE id=? AND state='draft' AND EXISTS (SELECT 1 FROM accounts a WHERE a.id=config_plans.account_id AND a.owner_id=config_plans.owner_id) AND EXISTS (SELECT 1 FROM users WHERE id=? AND disabled=0)", time.Now().UTC().Format(time.RFC3339), s.currentUser(r).ID, p.ID, s.currentUser(r).ID)
 	if e != nil {
 		problem(w, 500, "database_error", "无法确认方案")
 		return
@@ -375,11 +420,11 @@ func (s *Server) approveConfig(w http.ResponseWriter, r *http.Request) {
 		problem(w, 409, "state_conflict", "方案状态已变化")
 		return
 	}
-	_ = s.Store.Event("info", p.AccountID, "管理员已确认配置差异，等待 Windows 端复核与备份")
+	_ = s.Store.Event("info", p.AccountID, "用户已确认配置差异，等待 Windows 端复核与备份")
 	send(w, 202, map[string]string{"state": "queued"})
 }
 func (s *Server) rollbackConfig(w http.ResponseWriter, r *http.Request) {
-	ps, e := s.plans(r.PathValue("id"))
+	ps, e := s.visiblePlans(r, r.PathValue("id"))
 	if e != nil || len(ps) != 1 || ps[0].State != "applied" || ps[0].RollbackOf != "" {
 		problem(w, 409, "not_rollbackable", "只有已校验的原始修改可以建立回滚预览")
 		return
@@ -398,6 +443,7 @@ func (s *Server) rollbackConfig(w http.ResponseWriter, r *http.Request) {
 		problem(w, 409, "rollback_conflict", "配置已有后续变化，不能覆盖回滚")
 		return
 	}
+	p.CreatedBy = s.currentUser(r).ID
 	p.RollbackOf = p.ID
 	p.ID = token()
 	p.BeforeHash = p.AfterHash
@@ -417,7 +463,7 @@ func (s *Server) rollbackConfig(w http.ResponseWriter, r *http.Request) {
 	send(w, 201, p)
 }
 func (s *Server) configCommands(w http.ResponseWriter, r *http.Request) {
-	ps, e := s.plans("")
+	ps, e := s.listPlans("", "", true)
 	if e != nil {
 		problem(w, 500, "database_error", "无法读取配置方案")
 		return
@@ -428,8 +474,11 @@ func (s *Server) configCommands(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		a, e := s.planAccount(p)
+		if !s.mayManage(p.ApprovedBy, p.OwnerID) {
+			continue
+		}
 		if e != nil {
-			_, _ = s.Store.DB.Exec("UPDATE config_plans SET state='conflict',receipt='绑定或 Agent 状态变化，未继续下发' WHERE id=? AND state IN ('queued','dispatched')", p.ID)
+			_, _ = s.Store.DB.Exec("UPDATE config_plans SET state='conflict',receipt='绑定或 Agent 状态变化，未继续下发' WHERE id=? AND state='queued'", p.ID)
 			continue
 		}
 		if p.State == "queued" {
@@ -472,7 +521,7 @@ func (s *Server) configReceipt(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "hash_mismatch", "回执指纹不匹配")
 		return
 	}
-	cfg, e := s.Integrations.Load()
+	cfg, e := s.Integrations.ForUser(p.OwnerID).Load()
 	if e != nil {
 		problem(w, 503, "settings_unavailable", "通知设置暂不可用，操作回执将重试")
 		return
@@ -489,7 +538,7 @@ func (s *Server) configReceipt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	n, _ := result.RowsAffected()
-	e = notify.Enqueue(tx, cfg.Channels, notify.Facts{ID: p.ID, Kind: "config", Account: p.AccountID, State: receipt.State, Time: receipt.Time, Detail: receipt.Message, Source: "Windows Agent 备份与重新读取校验"})
+	e = notify.Enqueue(tx, cfg.Channels, notify.Facts{OwnerID: p.OwnerID, ID: p.ID, Kind: "config", Account: p.AccountID, State: receipt.State, Time: receipt.Time, Detail: receipt.Message, Source: "Windows Agent 备份与重新读取校验"})
 	if e != nil {
 		problem(w, 500, "notification_queue_failed", "回执与通知事务未提交，Agent 将用同一回执重试")
 		return
@@ -504,7 +553,7 @@ func (s *Server) configReceipt(w http.ResponseWriter, r *http.Request) {
 	send(w, 200, map[string]bool{"ok": true})
 }
 func (s *Server) notificationHistory(w http.ResponseWriter, r *http.Request) {
-	rows, e := s.Store.DB.Query("SELECT id,event_id,channel,state,detail,message,created_at FROM notification_outbox ORDER BY created_at DESC LIMIT 100")
+	rows, e := s.Store.DB.Query("SELECT id,event_id,channel,state,detail,message,created_at FROM notification_outbox WHERE owner_id=? ORDER BY created_at DESC LIMIT 100", s.currentUser(r).ID)
 	if e != nil {
 		problem(w, 500, "database_error", "无法读取通知记录")
 		return

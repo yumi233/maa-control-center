@@ -7,3 +7,6 @@ var Initial string
 
 //go:embed 002_agent_mode.sql
 var AgentMode string
+
+//go:embed 003_multi_user.sql
+var MultiUser string

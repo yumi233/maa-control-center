@@ -10,6 +10,7 @@ import (
 )
 
 type Channel struct {
+	PublicOnly       bool   `json:"-"`
 	Kind             string `json:"kind"`
 	Enabled          bool   `json:"enabled"`
 	Token            string `json:"token,omitempty"`
@@ -27,14 +28,22 @@ type Settings struct {
 	Creative bool      `json:"creative"`
 }
 type SettingsStore struct {
-	DB    *sql.DB
-	Vault *vault.Vault
+	DB     *sql.DB
+	Vault  *vault.Vault
+	UserID string
 }
 
+func (s SettingsStore) ForUser(id string) SettingsStore { s.UserID = id; return s }
+func (s SettingsStore) key() string {
+	if s.UserID == "" || s.UserID == "admin" {
+		return "default"
+	}
+	return s.UserID
+}
 func (s SettingsStore) Load() (Settings, error) {
 	v := Settings{Channels: []Channel{{Kind: "telegram", TargetType: "private"}, {Kind: "qq", TargetType: "private"}}}
 	var cipher string
-	e := s.DB.QueryRow("SELECT encrypted FROM integration_settings WHERE id='default'").Scan(&cipher)
+	e := s.DB.QueryRow("SELECT encrypted FROM integration_settings WHERE id=?", s.key()).Scan(&cipher)
 	if e == sql.ErrNoRows {
 		return v, nil
 	}
@@ -49,6 +58,12 @@ func (s SettingsStore) Load() (Settings, error) {
 		return v, fmt.Errorf("无法解密接入设置，请恢复配套密钥文件")
 	}
 	e = json.Unmarshal(b, &v)
+	if s.restricted() {
+		v.Provider.PublicOnly = true
+		for i := range v.Channels {
+			v.Channels[i].PublicOnly = true
+		}
+	}
 	return v, e
 }
 func (v Settings) Public() Settings {
@@ -62,7 +77,25 @@ func (v Settings) Public() Settings {
 	v.Channels = c
 	return v
 }
+func (s SettingsStore) restricted() bool {
+	if s.UserID == "" {
+		return false
+	}
+	var role string
+	return s.DB.QueryRow("SELECT role FROM users WHERE id=? AND disabled=0", s.UserID).Scan(&role) != nil || role != "admin"
+}
 func (s SettingsStore) Save(v Settings) error {
+	if s.restricted() {
+		if v.Provider.AllowPrivateHTTP {
+			return fmt.Errorf("内网模型地址需要管理员配置")
+		}
+		for _, c := range v.Channels {
+			if c.AllowPrivateHTTP {
+				return fmt.Errorf("内网通知地址需要管理员配置")
+			}
+		}
+	}
+
 	v.Channels = append([]Channel{}, v.Channels...)
 	old, e := s.Load()
 	if e != nil {
@@ -96,6 +129,9 @@ func (s SettingsStore) Save(v Settings) error {
 	seen := map[string]bool{}
 	for i := range v.Channels {
 		c := &v.Channels[i]
+		c.Token = strings.TrimSpace(c.Token)
+		c.ChatID = strings.TrimSpace(c.ChatID)
+		c.TargetID = strings.TrimSpace(c.TargetID)
 		if (c.Kind != "telegram" && c.Kind != "qq") || seen[c.Kind] {
 			return fmt.Errorf("通知渠道无效或重复")
 		}
@@ -141,6 +177,6 @@ func (s SettingsStore) Save(v Settings) error {
 	if e != nil {
 		return e
 	}
-	_, e = s.DB.Exec("INSERT INTO integration_settings(id,encrypted,updated_at) VALUES('default',?,?) ON CONFLICT(id) DO UPDATE SET encrypted=excluded.encrypted,updated_at=excluded.updated_at", encrypted, time.Now().UTC().Format(time.RFC3339))
+	_, e = s.DB.Exec("INSERT INTO integration_settings(id,encrypted,updated_at) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET encrypted=excluded.encrypted,updated_at=excluded.updated_at", s.key(), encrypted, time.Now().UTC().Format(time.RFC3339))
 	return e
 }

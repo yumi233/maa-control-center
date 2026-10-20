@@ -139,3 +139,26 @@ func TestNotificationUnknownIsNotRetriedAndModelCannotRewriteFacts(t *testing.T)
 		t.Fatal("model overwrote facts")
 	}
 }
+
+func TestTelegramRejectionsAndPreSendFailures(t *testing.T) {
+	for _, test := range []struct {
+		code           int
+		body, expected string
+	}{{401, `{"ok":false,"error_code":401}`, "Token"}, {403, `{"ok":false,"error_code":403}`, "开始对话"}, {400, `{"ok":false,"description":"Bad Request: chat not found private-fixture"}`, "Chat ID"}, {429, `{"ok":false,"error_code":429}`, "频繁"}} {
+		receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(test.code); w.Write([]byte(test.body)) }))
+		service := Service{TelegramBase: receiver.URL, HTTP: receiver.Client()}
+		state, e := service.Send(context.Background(), assistant.Channel{Kind: "telegram", Token: "123:fixture_token", ChatID: "1"}, "fixture")
+		receiver.Close()
+		if state != "failed" || e == nil || !strings.Contains(e.Error(), test.expected) || strings.Contains(e.Error(), "private-fixture") || strings.Contains(e.Error(), "fixture_token") {
+			t.Fatalf("unsafe or vague rejection %s %v", state, e)
+		}
+	}
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	address := receiver.URL
+	receiver.Close()
+	service := Service{TelegramBase: address}
+	state, e := service.Send(context.Background(), assistant.Channel{Kind: "telegram", Token: "123:fixture_token", ChatID: "1"}, "fixture")
+	if state != "failed" || e == nil || !strings.Contains(e.Error(), "尚未发送") {
+		t.Fatalf("pre-send failure mistaken as delivered/unknown: %s %v", state, e)
+	}
+}

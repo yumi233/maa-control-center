@@ -40,7 +40,7 @@ func main() {
 		if json.Unmarshal(b, &settings) != nil {
 			log.Fatal("invalid private configuration")
 		}
-		allowed := map[string]bool{"MAACC_PUBLIC_URL": true, "MAACC_LISTEN": true, "MAACC_DB": true, "MAACC_ADMIN_PASSWORD": true, "MAACC_AGENT_ID": true, "MAACC_AGENT_TOKEN": true, "MAACC_TLS_CERT": true, "MAACC_TLS_KEY": true, "MAACC_PRIMARY_NAME": true, "MAACC_SECONDARY_NAME": true, "MAACC_BINDINGS_FILE": true}
+		allowed := map[string]bool{"MAACC_PUBLIC_URL": true, "MAACC_ALLOWED_ORIGINS": true, "MAACC_LISTEN": true, "MAACC_DB": true, "MAACC_ADMIN_PASSWORD": true, "MAACC_AGENT_ID": true, "MAACC_AGENT_TOKEN": true, "MAACC_TLS_CERT": true, "MAACC_TLS_KEY": true, "MAACC_PRIMARY_NAME": true, "MAACC_SECONDARY_NAME": true, "MAACC_BINDINGS_FILE": true}
 		for k, v := range settings {
 			if !allowed[k] {
 				log.Fatal("unsupported private configuration key")
@@ -57,6 +57,10 @@ func main() {
 		}
 	}
 	publicURL := env("MAACC_PUBLIC_URL", "http://127.0.0.1:8421")
+	origins, err := api.ParseOrigins(append([]string{publicURL}, strings.Split(os.Getenv("MAACC_ALLOWED_ORIGINS"), ",")...))
+	if err != nil {
+		log.Fatal("invalid public URL or allowed origins: ", err)
+	}
 	cert, key := os.Getenv("MAACC_TLS_CERT"), os.Getenv("MAACC_TLS_KEY")
 	if !strings.HasPrefix(*addr, "127.0.0.1:") && !strings.HasPrefix(*addr, "localhost:") && cert == "" && os.Getenv("MAACC_ALLOW_LAN_HTTP") != "true" {
 		log.Fatal("non-loopback listener requires TLS; MAACC_ALLOW_LAN_HTTP=true is for isolated test networks only")
@@ -85,7 +89,7 @@ func main() {
 	if err != nil {
 		log.Fatal("cannot initialize encrypted integration storage")
 	}
-	s := api.New(store, api.Config{PublicURL: publicURL, AgentID: env("MAACC_AGENT_ID", "windows-agent"), AgentToken: os.Getenv("MAACC_AGENT_TOKEN"), Assets: ui.Files(), Vault: secrets})
+	s := api.New(store, api.Config{PublicURL: publicURL, AgentID: env("MAACC_AGENT_ID", "windows-agent"), AgentToken: os.Getenv("MAACC_AGENT_TOKEN"), Assets: ui.Files(), Vault: secrets, AllowedOrigins: origins})
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	defer stopWorker()
 	go s.Worker(workerCtx)
@@ -99,7 +103,7 @@ func main() {
 		defer cancel()
 		_ = srv.Shutdown(ctx)
 	}()
-	log.Printf("MAA Control Center 0.2.0 | reviewed configuration | listen=%s", *addr)
+	log.Printf("MAA Control Center 0.3.0 | reviewed configuration | listen=%s", *addr)
 	if cert != "" {
 		err = srv.ListenAndServeTLS(cert, key)
 	} else {

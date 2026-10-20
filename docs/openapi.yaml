@@ -1,13 +1,54 @@
 openapi: 3.1.0
 info:
   title: MAA Control Center API
-  version: 0.2.0
-  description: Reviewed configuration plans with local Windows safety checks; MAA task dispatch remains disabled. All dates use RFC3339 UTC. See docs/agent-mode.md for operation scopes and setup.
+  version: 0.3.0
+  description: Reviewed configuration plans with local Windows safety checks; MAA task dispatch remains disabled. All dates use RFC3339 UTC. Accounts, plans, settings and notification records are user scoped; administrator-only endpoints reject members. See docs/agent-mode.md for operation scopes and setup.
 servers:
   - url: /
 security:
   - session: []
 paths:
+  /api/v1/auth/password:
+    post:
+      security: [{session: [], csrf: []}]
+      summary: Verify current_password and set new_password (12–72 bytes), revoking all sessions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, required: [current_password, new_password]}
+      responses:
+        '200': {description: Password changed; log in again}
+        '422': {$ref: '#/components/responses/Error'}
+  /api/v1/users:
+    get:
+      summary: Administrator only; list users without password hashes
+      responses:
+        '200': {description: 'id, username, role, disabled'}
+        '403': {$ref: '#/components/responses/Error'}
+    post:
+      security: [{session: [], csrf: []}]
+      summary: Administrator only; create username/password and role admin or member
+      responses:
+        '201': {description: User created}
+        '403': {$ref: '#/components/responses/Error'}
+  /api/v1/users/{id}:
+    parameters: [{$ref: '#/components/parameters/ResourceID'}]
+    put:
+      security: [{session: [], csrf: []}]
+      summary: Administrator only; set role/disabled and optional replacement password; revoke sessions on privilege/password change
+      responses:
+        '200': {description: User updated}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/accounts/{id}:
+    parameters: [{$ref: '#/components/parameters/AccountID'}]
+    put:
+      security: [{session: [], csrf: []}]
+      summary: Rename owned account; only administrator may change owner_id; pending commands block transfer
+      responses:
+        '200': {description: Account updated}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
   /api/v1/integrations:
     get:
       summary: Encrypted integration settings, returned without keys; configured booleans only
@@ -191,6 +232,12 @@ paths:
         '200': {description: 'accounts[], agents[], events[], jobs[], server_time, mode, version'}
         '401': {$ref: '#/components/responses/Error'}
   /api/v1/accounts:
+    post:
+      security: [{session: [], csrf: []}]
+      summary: Add logical account with name/role; member owner is self, administrator may set owner_id; binding requires administrator
+      responses:
+        '201': {description: Unbound account created}
+        '403': {$ref: '#/components/responses/Error'}
     get:
       summary: Independent account observations
       responses:

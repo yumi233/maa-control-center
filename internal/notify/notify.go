@@ -3,14 +3,19 @@ package notify
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptrace"
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yumi233/maa-control-center/internal/assistant"
@@ -18,6 +23,7 @@ import (
 )
 
 type Facts struct {
+	OwnerID string `json:"owner_id,omitempty"`
 	ID      string `json:"id"`
 	Kind    string `json:"kind"`
 	Account string `json:"account"`
@@ -35,7 +41,7 @@ type Service struct {
 }
 
 func (s *Service) Queue(f Facts) error {
-	cfg, e := s.Settings.Load()
+	cfg, e := s.Settings.ForUser(owner(f.OwnerID)).Load()
 	if e != nil {
 		return e
 	}
@@ -55,8 +61,8 @@ func Enqueue(db Execer, channels []assistant.Channel, f Facts) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	for _, c := range channels {
 		if c.Enabled {
-			id := rules.Hash([]byte(f.ID + "/" + c.Kind))
-			_, e = db.Exec("INSERT OR IGNORE INTO notification_outbox(id,event_id,channel,facts,state,created_at,updated_at) VALUES(?,?,?,?,'queued',?,?)", id, f.ID, c.Kind, string(b), now, now)
+			id := rules.Hash([]byte(owner(f.OwnerID) + "/" + f.ID + "/" + c.Kind))
+			_, e = db.Exec("INSERT OR IGNORE INTO notification_outbox(id,event_id,channel,facts,state,created_at,updated_at,owner_id) VALUES(?,?,?,?,'queued',?,?,?)", id, f.ID, c.Kind, string(b), now, now, owner(f.OwnerID))
 			if e != nil {
 				return e
 			}
@@ -145,11 +151,24 @@ func (s *Service) Send(ctx context.Context, c assistant.Channel, text string) (s
 	}
 	h := s.HTTP
 	if h == nil {
-		h = assistant.Client(15 * time.Second)
+		h = assistant.NetworkClient(15*time.Second, c.Kind == "qq" && c.AllowPrivateHTTP && !c.PublicOnly)
 	}
+	var wrote atomic.Bool
+	req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{WroteHeaders: func() { wrote.Store(true) }}))
 	res, e := h.Do(req)
 	if e != nil {
-		return "unknown", fmt.Errorf("网络未确认送达，请先核实收件端再人工重试")
+		if !wrote.Load() {
+			var cert x509.UnknownAuthorityError
+			var dns *net.DNSError
+			if errors.As(e, &cert) {
+				return "failed", fmt.Errorf("TLS 证书验证失败，请检查服务器系统 CA 证书包")
+			}
+			if errors.As(e, &dns) {
+				return "failed", fmt.Errorf("通知地址 DNS 解析失败，消息尚未发送")
+			}
+			return "failed", fmt.Errorf("通知连接或 TLS 握手失败，消息尚未发送；请检查服务器网络和 CA 证书")
+		}
+		return "unknown", fmt.Errorf("请求已发出，但网络未确认送达；请先核实收件端再人工重试")
 	}
 	defer res.Body.Close()
 	raw, e := io.ReadAll(io.LimitReader(res.Body, 65537))
@@ -160,6 +179,9 @@ func (s *Service) Send(ctx context.Context, c assistant.Channel, text string) (s
 		return "unknown", fmt.Errorf("通知服务返回 HTTP %d，送达待核实", res.StatusCode)
 	}
 	if res.StatusCode != 200 {
+		if c.Kind == "telegram" {
+			return "failed", telegramError(res.StatusCode, raw)
+		}
 		return "failed", fmt.Errorf("通知服务返回 HTTP %d", res.StatusCode)
 	}
 	var result struct {
@@ -174,6 +196,9 @@ func (s *Service) Send(ctx context.Context, c assistant.Channel, text string) (s
 	if (c.Kind == "telegram" && result.OK) || (c.Kind == "qq" && result.Status == "ok" && result.Retcode == 0) {
 		return "sent", nil
 	}
+	if c.Kind == "telegram" {
+		return "failed", telegramError(400, raw)
+	}
 	return "failed", fmt.Errorf("通知渠道拒绝发送，请检查目标和权限")
 }
 
@@ -182,12 +207,20 @@ func (s *Service) Drain(ctx context.Context) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := 0; i < 20; i++ {
-		var id, kind, raw string
-		e := s.Settings.DB.QueryRow("SELECT id,channel,facts FROM notification_outbox WHERE state='queued' ORDER BY created_at,id LIMIT 1").Scan(&id, &kind, &raw)
+		var id, kind, raw, userID string
+		e := s.Settings.DB.QueryRow("SELECT id,channel,facts,owner_id FROM notification_outbox WHERE state='queued' ORDER BY created_at,id LIMIT 1").Scan(&id, &kind, &raw, &userID)
 		if e != nil {
 			return
 		}
-		cfg, e := s.Settings.Load()
+		var active int
+		if s.Settings.DB.QueryRow("SELECT count(*) FROM users WHERE id=? AND disabled=0", userID).Scan(&active) != nil {
+			return
+		}
+		if active != 1 {
+			s.finish(id, "failed", "所属用户已停用", "")
+			continue
+		}
+		cfg, e := s.Settings.ForUser(userID).Load()
 		if e != nil {
 			return
 		}
@@ -227,8 +260,15 @@ func (s *Service) Drain(ctx context.Context) {
 func (s *Service) finish(id, state, detail, message string) {
 	_, _ = s.Settings.DB.Exec("UPDATE notification_outbox SET state=?,detail=?,message=?,updated_at=? WHERE id=?", state, detail, message, time.Now().UTC().Format(time.RFC3339), id)
 }
-func (s *Service) Retry(id string) error {
-	res, e := s.Settings.DB.Exec("UPDATE notification_outbox SET state='queued',detail='管理员确认后重试',updated_at=? WHERE id=? AND state IN ('failed','unknown')", time.Now().UTC().Format(time.RFC3339), id)
+func owner(id string) string {
+	if id == "" {
+		return "admin"
+	}
+	return id
+}
+func (s *Service) Retry(id string) error { return s.RetryFor(id, "admin") }
+func (s *Service) RetryFor(id, userID string) error {
+	res, e := s.Settings.DB.Exec("UPDATE notification_outbox SET state='queued',detail='管理员确认后重试',updated_at=? WHERE id=? AND owner_id=? AND state IN ('failed','unknown')", time.Now().UTC().Format(time.RFC3339), id, userID)
 	if e != nil {
 		return e
 	}
@@ -237,4 +277,30 @@ func (s *Service) Retry(id string) error {
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+func telegramError(status int, raw []byte) error {
+	var v struct {
+		Code        int    `json:"error_code"`
+		Description string `json:"description"`
+	}
+	_ = json.Unmarshal(raw, &v)
+	if v.Code != 0 {
+		status = v.Code
+	}
+	d := strings.ToLower(v.Description)
+	switch {
+	case status == 401:
+		return fmt.Errorf("Telegram Token 无效或已撤销，请重新保存 Bot Token")
+	case status == 403:
+		return fmt.Errorf("Telegram 拒绝发送：请先与机器人开始对话，并检查机器人是否被屏蔽或缺少群权限")
+	case status == 429:
+		return fmt.Errorf("Telegram 请求过于频繁，请稍后手动重试")
+	case strings.Contains(d, "chat not found"):
+		return fmt.Errorf("Telegram 找不到 Chat ID：请先向机器人发送 /start；群聊需先添加机器人并核对群 ID")
+	case strings.Contains(d, "message thread not found"):
+		return fmt.Errorf("Telegram 群话题不存在，请检查目标群与话题设置")
+	default:
+		return fmt.Errorf("Telegram 拒绝发送（HTTP %d），请核对 Chat ID 和机器人权限", status)
+	}
 }

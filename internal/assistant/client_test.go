@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -59,6 +60,29 @@ func TestExactModelJSONAndRedactedFailures(t *testing.T) {
 	for _, u := range []string{"http://169.254.169.254/v1", "https://user:secret@example.test/v1", "http://example.test/v1", "https://example.test/v1?api_key=secret"} {
 		if ValidateURL(u, true) == nil {
 			t.Fatalf("unsafe URL %s", u)
+		}
+	}
+}
+
+func TestPublicTransportBlocksPrivateResolvedDestinations(t *testing.T) {
+	client := NetworkClient(time.Second, false)
+	for _, address := range []string{"http://127.0.0.1:1", "http://[::1]:1", "http://localhost:1", "http://169.254.169.254/"} {
+		if response, e := client.Get(address); e == nil {
+			response.Body.Close()
+			t.Fatalf("public transport reached private destination %s", address)
+		}
+	}
+}
+
+func TestPublicDestinationRanges(t *testing.T) {
+	for _, s := range []string{"100.64.0.1", "198.18.0.1", "192.0.2.1", "::ffff:192.168.1.1", "64:ff9b::a00:1", "2001:db8::1", "240.0.0.1"} {
+		if publicDestination(netip.MustParseAddr(s)) {
+			t.Fatalf("non-public address accepted %s", s)
+		}
+	}
+	for _, s := range []string{"1.1.1.1", "149.154.166.110", "2606:4700::1111"} {
+		if !publicDestination(netip.MustParseAddr(s)) {
+			t.Fatalf("public address blocked %s", s)
 		}
 	}
 }

@@ -75,6 +75,7 @@ type Binding struct {
 }
 
 type Account struct {
+	OwnerID     string    `json:"owner_id"`
 	ID          string    `json:"id"`
 	Name        string    `json:"name"`
 	Role        string    `json:"role"`

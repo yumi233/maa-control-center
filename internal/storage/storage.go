@@ -34,6 +34,23 @@ func Open(path, password, primary, secondary string) (*Store, error) {
 	if _, err = db.Exec(migrations.AgentMode); err != nil {
 		return fail(err)
 	}
+	var migrated int
+	if err = db.QueryRow("SELECT count(*) FROM schema_migrations WHERE version=3").Scan(&migrated); err != nil {
+		return fail(err)
+	}
+	if migrated == 0 {
+		tx, e := db.Begin()
+		if e != nil {
+			return fail(e)
+		}
+		if _, e = tx.Exec(migrations.MultiUser); e != nil {
+			tx.Rollback()
+			return fail(e)
+		}
+		if e = tx.Commit(); e != nil {
+			return fail(e)
+		}
+	}
 	if _, err = db.Exec("UPDATE notification_outbox SET state='unknown',detail='服务重启，发送结果待核实；可人工重试' WHERE state='sending'"); err != nil {
 		return fail(err)
 	}
@@ -152,12 +169,18 @@ func (s *Store) Bind(b model.Binding) error {
 	if !found {
 		return fmt.Errorf("profile not discovered")
 	}
-	_, err := s.DB.Exec("INSERT INTO device_bindings(account_id,agent_id,instance_id,profile_id) VALUES(?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET agent_id=excluded.agent_id,instance_id=excluded.instance_id,profile_id=excluded.profile_id", b.AccountID, b.AgentID, b.InstanceID, b.ProfileID)
+	res, err := s.DB.Exec("INSERT INTO device_bindings(account_id,agent_id,instance_id,profile_id) SELECT ?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM config_plans WHERE account_id=? AND state IN ('queued','dispatched','unknown')) ON CONFLICT(account_id) DO UPDATE SET agent_id=excluded.agent_id,instance_id=excluded.instance_id,profile_id=excluded.profile_id", b.AccountID, b.AgentID, b.InstanceID, b.ProfileID, b.AccountID)
+	if err == nil {
+		n, _ := res.RowsAffected()
+		if n != 1 {
+			return fmt.Errorf("account busy")
+		}
+	}
 	return err
 }
 
 func (s *Store) Accounts() ([]model.Account, error) {
-	rows, err := s.DB.Query(`SELECT a.id,a.name,a.role,b.profile_id,ag.last_seen,m.snapshot
+	rows, err := s.DB.Query(`SELECT a.id,a.name,a.role,a.owner_id,b.profile_id,ag.last_seen,m.snapshot
  FROM accounts a LEFT JOIN device_bindings b ON b.account_id=a.id
  LEFT JOIN agents ag ON ag.id=b.agent_id
  LEFT JOIN maa_instances m ON m.agent_id=b.agent_id AND m.id=b.instance_id ORDER BY a.role`)
@@ -170,7 +193,7 @@ func (s *Store) Accounts() ([]model.Account, error) {
 		var a model.Account
 		var pid, snap sql.NullString
 		var seen sql.NullInt64
-		if err = rows.Scan(&a.ID, &a.Name, &a.Role, &pid, &seen, &snap); err != nil {
+		if err = rows.Scan(&a.ID, &a.Name, &a.Role, &a.OwnerID, &pid, &seen, &snap); err != nil {
 			return nil, err
 		}
 		a.Status = "unknown"

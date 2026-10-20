@@ -26,6 +26,7 @@ type Config struct {
 	PublicURL, AgentID, AgentToken string
 	Assets                         fs.FS
 	Vault                          *vault.Vault
+	AllowedOrigins                 []string
 }
 type Server struct {
 	Store         *storage.Store
@@ -80,9 +81,10 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	}
 	return true
 }
-func (s *Server) rate(r *http.Request, limit int) bool {
+func (s *Server) rate(r *http.Request, limit int) bool { return s.rateBucket(r, limit, "") }
+func (s *Server) rateBucket(r *http.Request, limit int, bucket string) bool {
 	host, _, _ := net.SplitHostPort(r.RemoteAddr)
-	key := r.URL.Path + "/" + host
+	key := r.URL.Path + "/" + host + "/" + bucket
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
@@ -107,7 +109,7 @@ func (s *Server) session(r *http.Request) (string, string, bool) {
 		return "", "", false
 	}
 	var user, csrf string
-	err = s.Store.DB.QueryRow("SELECT user_id,csrf FROM sessions WHERE token_hash=? AND expires_at>?", digest(c.Value), time.Now().Unix()).Scan(&user, &csrf)
+	err = s.Store.DB.QueryRow("SELECT s.user_id,s.csrf FROM sessions s JOIN users u ON u.id=s.user_id WHERE u.disabled=0 AND s.token_hash=? AND s.expires_at>?", digest(c.Value), time.Now().Unix()).Scan(&user, &csrf)
 	return user, csrf, err == nil
 }
 func (s *Server) originOK(r *http.Request) bool {
@@ -115,7 +117,19 @@ func (s *Server) originOK(r *http.Request) bool {
 	if origin == "" {
 		return r.Header.Get("Sec-Fetch-Site") != "cross-site"
 	}
-	return origin == strings.TrimRight(s.cfg.PublicURL, "/")
+	if origin == strings.TrimRight(s.cfg.PublicURL, "/") {
+		return true
+	}
+	origins, err := ParseOrigins(s.cfg.AllowedOrigins)
+	if err != nil {
+		return false
+	}
+	for _, allowed := range origins {
+		if origin == allowed {
+			return true
+		}
+	}
+	return false
 }
 func (s *Server) protect(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -134,17 +148,19 @@ func (s *Server) protect(next http.HandlerFunc) http.HandlerFunc {
 func (s *Server) Handler() http.Handler {
 	m := http.NewServeMux()
 	s.integrationRoutes(m)
+	s.userRoutes(m)
 	m.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		if err := s.Store.DB.PingContext(r.Context()); err != nil {
 			problem(w, 503, "database_unavailable", "数据库不可用")
 			return
 		}
-		send(w, 200, map[string]any{"status": "ok", "version": "0.2.0", "mode": "reviewed_configuration"})
+		send(w, 200, map[string]any{"status": "ok", "version": "0.3.0", "mode": "reviewed_configuration"})
 	})
 	m.HandleFunc("POST /api/v1/auth/login", s.login)
 	m.HandleFunc("GET /api/v1/auth/session", s.protect(func(w http.ResponseWriter, r *http.Request) {
+		u := s.currentUser(r)
 		_, csrf, _ := s.session(r)
-		send(w, 200, map[string]string{"username": "admin", "csrf_token": csrf})
+		send(w, 200, map[string]string{"id": u.ID, "username": u.Username, "role": u.Role, "csrf_token": csrf})
 	}))
 	m.HandleFunc("POST /api/v1/auth/logout", s.protect(func(w http.ResponseWriter, r *http.Request) {
 		if c, err := r.Cookie("maacc_session"); err == nil {
@@ -153,10 +169,10 @@ func (s *Server) Handler() http.Handler {
 		http.SetCookie(w, &http.Cookie{Name: "maacc_session", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: strings.HasPrefix(s.cfg.PublicURL, "https://")})
 		send(w, 200, map[string]bool{"ok": true})
 	}))
-	m.HandleFunc("GET /api/v1/accounts", s.protect(func(w http.ResponseWriter, r *http.Request) { a, err := s.Store.Accounts(); s.result(w, a, err) }))
+	m.HandleFunc("GET /api/v1/accounts", s.protect(func(w http.ResponseWriter, r *http.Request) { a, err := s.visibleAccounts(r); s.result(w, a, err) }))
 	m.HandleFunc("GET /api/v1/overview", s.protect(s.overview))
-	m.HandleFunc("GET /api/v1/events", s.protect(func(w http.ResponseWriter, r *http.Request) { e, err := s.Store.Events(); s.result(w, e, err) }))
-	m.HandleFunc("GET /api/v1/agents", s.protect(func(w http.ResponseWriter, r *http.Request) { a, err := s.Store.Discovered(); s.result(w, a, err) }))
+	m.HandleFunc("GET /api/v1/events", s.protect(func(w http.ResponseWriter, r *http.Request) { e, err := s.visibleEvents(r); s.result(w, e, err) }))
+	m.HandleFunc("GET /api/v1/agents", s.protect(func(w http.ResponseWriter, r *http.Request) { a, err := s.visibleAgents(r); s.result(w, a, err) }))
 	m.HandleFunc("GET /api/v1/accounts/{id}/status", s.protect(func(w http.ResponseWriter, r *http.Request) {
 		if a := s.account(w, r); a != nil {
 			send(w, 200, a)
@@ -194,15 +210,19 @@ func (s *Server) Handler() http.Handler {
 			send(w, 200, map[string]any{"lines": logs, "redacted": true})
 		}
 	}))
-	m.HandleFunc("POST /api/v1/accounts/{id}/binding", s.protect(func(w http.ResponseWriter, r *http.Request) {
+	m.HandleFunc("POST /api/v1/accounts/{id}/binding", s.adminOnly(func(w http.ResponseWriter, r *http.Request) {
 		if a := s.account(w, r); a != nil {
+			if !s.accountIdle(a.ID) {
+				problem(w, 409, "account_busy", "账号有待执行方案，请先取消或等待完成")
+				return
+			}
 			var b model.Binding
 			if !decode(w, r, &b) {
 				return
 			}
 			b.AccountID = a.ID
 			if err := s.Store.Bind(b); err != nil {
-				problem(w, 422, "binding_invalid", "实例或配置尚未发现，无法绑定")
+				problem(w, 422, "binding_invalid", "配置未发现或已绑定其他账号，无法重复绑定")
 				return
 			}
 			_ = s.Store.Event("info", a.ID, "管理员已确认只读账号绑定")
@@ -216,7 +236,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("POST /api/v1/jobs", s.protect(s.readOnly))
 	m.HandleFunc("POST /api/v1/jobs/{id}/cancel", s.protect(s.readOnly))
 	m.HandleFunc("GET /api/v1/settings", s.protect(func(w http.ResponseWriter, r *http.Request) {
-		send(w, 200, map[string]any{"mode": "reviewed_configuration", "version": "0.2.0", "database": "SQLite WAL", "agent_paired": len(s.cfg.AgentToken) >= 32, "scheduler_owner": "existing_maa", "remote_control": false, "configuration_sync": true})
+		send(w, 200, map[string]any{"mode": "reviewed_configuration", "version": "0.3.0", "database": "SQLite WAL", "agent_paired": len(s.cfg.AgentToken) >= 32, "scheduler_owner": "existing_maa", "remote_control": false, "configuration_sync": true})
 	}))
 	m.HandleFunc("POST /api/v1/agent/heartbeat", s.heartbeat)
 	// Production dispatch is intentionally unavailable until installed-version capability checks pass.
@@ -289,7 +309,7 @@ func (s *Server) result(w http.ResponseWriter, v any, err error) {
 	send(w, 200, v)
 }
 func (s *Server) account(w http.ResponseWriter, r *http.Request) *model.Account {
-	a, err := s.Store.Accounts()
+	a, err := s.visibleAccounts(r)
 	if err != nil {
 		problem(w, 500, "storage_error", "读取账号失败")
 		return nil
@@ -312,29 +332,29 @@ func required(role string) any {
 	return map[string]any{"source": "inherit_verified_configuration"}
 }
 func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
-	a, err := s.Store.Accounts()
+	a, err := s.visibleAccounts(r)
 	if err != nil {
 		s.result(w, nil, err)
 		return
 	}
-	agents, err := s.Store.Discovered()
+	agents, err := s.visibleAgents(r)
 	if err != nil {
 		s.result(w, nil, err)
 		return
 	}
-	events, err := s.Store.Events()
+	events, err := s.visibleEvents(r)
 	if err != nil {
 		s.result(w, nil, err)
 		return
 	}
-	send(w, 200, map[string]any{"accounts": a, "agents": agents, "events": events, "jobs": []any{}, "server_time": time.Now().UTC().Format(time.RFC3339), "mode": "reviewed_configuration", "version": "0.2.0"})
+	send(w, 200, map[string]any{"accounts": a, "agents": agents, "events": events, "jobs": []any{}, "server_time": time.Now().UTC().Format(time.RFC3339), "mode": "reviewed_configuration", "version": "0.3.0"})
 }
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if !s.originOK(r) {
 		problem(w, 403, "origin", "来源校验失败")
 		return
 	}
-	if !s.rate(r, 12) {
+	if !s.rate(r, 120) {
 		problem(w, 429, "rate_limited", "尝试次数过多，请稍后重试")
 		return
 	}
@@ -345,8 +365,12 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
+	if len(in.Username) > 48 || !s.rateBucket(r, 12, "login/"+strings.ToLower(in.Username)) {
+		problem(w, 429, "rate_limited", "该账号尝试次数过多，请稍后重试")
+		return
+	}
 	var hash, id string
-	err := s.Store.DB.QueryRow("SELECT id,password_hash FROM users WHERE username=?", in.Username).Scan(&id, &hash)
+	err := s.Store.DB.QueryRow("SELECT id,password_hash FROM users WHERE disabled=0 AND username=?", in.Username).Scan(&id, &hash)
 	if err != nil {
 		hash = "$2a$10$9KqLxMGfrY5xjKws3g.N4OqW5BBEFXkuB8Vq8vWCOTgRj5ED1mzGS"
 	}
@@ -362,6 +386,11 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
+	var fresh string
+	if tx.QueryRow("SELECT password_hash FROM users WHERE id=? AND disabled=0", id).Scan(&fresh) != nil || fresh != hash {
+		problem(w, 401, "invalid_credentials", "用户名或密码不正确")
+		return
+	}
 	if _, err = tx.Exec("DELETE FROM sessions WHERE expires_at<? OR user_id=?", time.Now().Unix(), id); err != nil {
 		s.result(w, nil, err)
 		return
@@ -375,8 +404,10 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: "maacc_session", Value: value, Path: "/", MaxAge: 43200, HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: strings.HasPrefix(s.cfg.PublicURL, "https://")})
-	_ = s.Store.Event("info", "", "管理员已登录管理中心")
-	send(w, 200, map[string]string{"username": in.Username, "csrf_token": csrf})
+	_ = s.Store.Event("info", "", "用户已登录管理中心")
+	var role string
+	_ = s.Store.DB.QueryRow("SELECT role FROM users WHERE id=?", id).Scan(&role)
+	send(w, 200, map[string]string{"id": id, "username": in.Username, "role": role, "csrf_token": csrf})
 }
 func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request) {
 	bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
