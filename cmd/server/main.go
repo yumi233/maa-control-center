@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/yumi233/maa-control-center/internal/model"
 	"github.com/yumi233/maa-control-center/internal/storage"
 	"github.com/yumi233/maa-control-center/internal/ui"
+	"github.com/yumi233/maa-control-center/internal/vault"
 )
 
 func env(k, fallback string) string {
@@ -79,17 +81,25 @@ func main() {
 			}
 		}
 	}
-	s := api.New(store, api.Config{PublicURL: publicURL, AgentID: env("MAACC_AGENT_ID", "windows-agent"), AgentToken: os.Getenv("MAACC_AGENT_TOKEN"), Assets: ui.Files()})
-	srv := &http.Server{Addr: *addr, Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 20 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
+	secrets, err := vault.Open(filepath.Join(filepath.Dir(*data), "integrations.key"))
+	if err != nil {
+		log.Fatal("cannot initialize encrypted integration storage")
+	}
+	s := api.New(store, api.Config{PublicURL: publicURL, AgentID: env("MAACC_AGENT_ID", "windows-agent"), AgentToken: os.Getenv("MAACC_AGENT_TOKEN"), Assets: ui.Files(), Vault: secrets})
+	workerCtx, stopWorker := context.WithCancel(context.Background())
+	defer stopWorker()
+	go s.Worker(workerCtx)
+	srv := &http.Server{Addr: *addr, Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 65 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
 	done := make(chan os.Signal, 1)
 	signal.Notify(done, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-done
+		stopWorker()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(ctx)
 	}()
-	log.Printf("MAA Control Center 0.1.0 | read-only | listen=%s", *addr)
+	log.Printf("MAA Control Center 0.2.0 | reviewed configuration | listen=%s", *addr)
 	if cert != "" {
 		err = srv.ListenAndServeTLS(cert, key)
 	} else {

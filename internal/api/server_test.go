@@ -12,6 +12,7 @@ import (
 
 	"github.com/yumi233/maa-control-center/internal/model"
 	"github.com/yumi233/maa-control-center/internal/storage"
+	"github.com/yumi233/maa-control-center/internal/vault"
 )
 
 const testPassword = "example-test-password-only"
@@ -24,7 +25,8 @@ func testServer(t *testing.T) (*Server, http.Handler) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.DB.Close() })
-	s := New(st, Config{PublicURL: "https://control.example.test", AgentID: "fixture-agent", AgentToken: testToken, Assets: fstest.MapFS{"index.html": {Data: []byte("fixture frontend")}}})
+	v, _ := vault.New(make([]byte, 32))
+	s := New(st, Config{PublicURL: "https://control.example.test", AgentID: "fixture-agent", AgentToken: testToken, Assets: fstest.MapFS{"index.html": {Data: []byte("fixture frontend")}}, Vault: v})
 	return s, s.Handler()
 }
 func call(h http.Handler, method, path, body string, cookie *http.Cookie, csrf string) *httptest.ResponseRecorder {

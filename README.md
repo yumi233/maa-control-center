@@ -1,14 +1,16 @@
 # MAA Control Center
 
-轻量、独立部署的 MAA Web 管理中心。NAS 负责可视化与调度，Windows 继续运行现有 MAA 和模拟器。
+轻量、独立部署的 MAA Web 管理中心。NAS 负责可视化、配置方案和通知，Windows 继续运行现有 MAA 和模拟器。
 
-**v0.1.0：只读接入 MVP。** 支持真实 Windows Agent 心跳、多配置档、原有任务顺序、库存目标、独立基建排班与日志。实际任务下发、配置写入、自动调度和自动搓玉保持关闭，详细范围见[验证与限制](docs/verification.md)。
+**v0.2.0：Agent 配置与通知。** 通过自己的 OpenAI 兼容 API，用自然语言生成 MAA 配置方案；版本化规则校验、差异确认、Windows 本地备份、应用校验和受控回滚构成完整流程。支持 Telegram 与 QQ OneBot/NapCat 通知，详情见 [Agent 模式](docs/agent-mode.md)。
+
+继续提供真实 Agent 心跳、多配置档、库存目标、独立基建排班与日志。兼容范围为已核实的 MAA 6.20 业务字段；未支持字段明确拒绝。实际挂机任务下发、额外自动调度和自动搓玉仍未启用，沿用现有 MAA 定时安排。
 
 ## 设计与技术
 
 - Vue 3 / TypeScript / Vite 响应式前端
 - Go HTTP API / SQLite WAL
-- Go Windows Agent，只读发现与心跳
+- Go Windows Agent，发现、心跳和经确认的配置同步
 - 使用 [Endfield UI skill](https://github.com/hhikr/endfield-ui-skill) 的设计规范
 - MIT 开源；自托管 Saira 字体遵循 SIL OFL 1.1
 
@@ -40,11 +42,12 @@ NAS 与 Windows 的 HTTPS 部署、Agent 登录启动任务及卸载方法见[�
 - [架构与安全边界](docs/architecture.md)
 - [API / OpenAPI](docs/openapi.yaml)
 - [设计记录](docs/design.md)
+- [Agent 配置、规则库与 TG/QQ 通知](docs/agent-mode.md)
 - [验证记录与未完成项](docs/verification.md)
 
 ## 接入原则
 
-账号、MAA 安装、配置档与模拟器分别管理。一个 MAA 可以包含多个配置档，不假设每个账号独占进程。现有基建文件分别只读，不覆盖；没有账号归属的仓库缓存不作为实际库存展示。
+账号、MAA 安装、配置档与模拟器分别管理。一个 MAA 可以包含多个配置档，不假设每个账号独占进程。现有文件默认只读；启用配置同步后也必须逐次核对差异，并在 MAA 完全退出时应用。没有账号归属的仓库缓存不作为实际库存展示。
 
 首版只有单管理员。首次启动在新 SQLite 数据库中建立账号，密码使用 bcrypt。Agent 使用独立配对令牌，公网与非回环访问要求 HTTPS。没有任意路径写入或远程 Shell 接口。
 

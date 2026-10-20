@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/yumi233/maa-control-center/internal/model"
+	"github.com/yumi233/maa-control-center/internal/rules"
 )
 
 type Task struct {
@@ -101,7 +102,7 @@ func Allowed(path string, roots []string) bool {
 	return false
 }
 func Parse(data []byte, allowed []string) ([]model.Profile, error) {
-	data=bytes.TrimPrefix(data,[]byte{0xef,0xbb,0xbf})
+	data = bytes.TrimPrefix(data, []byte{0xef, 0xbb, 0xbf})
 	var c config
 	if err := json.Unmarshal(data, &c); err != nil {
 		return nil, fmt.Errorf("unsupported or damaged MAA configuration")
@@ -162,13 +163,14 @@ func Parse(data []byte, allowed []string) ([]model.Profile, error) {
 			if t.Type == "Infrast" && t.Filename != "" && Allowed(t.Filename, allowed) {
 				if b, err := ReadBounded(t.Filename, 1<<20); err == nil {
 					var doc map[string]json.RawMessage
-					if json.Unmarshal(bytes.TrimPrefix(b,[]byte{0xef,0xbb,0xbf}), &doc) == nil && len(doc["plans"]) > 0 {
-						p.Schedule = bytes.TrimPrefix(b,[]byte{0xef,0xbb,0xbf})
+					if json.Unmarshal(bytes.TrimPrefix(b, []byte{0xef, 0xbb, 0xbf}), &doc) == nil && len(doc["plans"]) > 0 {
+						p.Schedule = bytes.TrimPrefix(b, []byte{0xef, 0xbb, 0xbf})
 						p.ScheduleHash = hash(b)
 					}
 				}
 			}
 		}
+		p.Editable = rules.Projection(data, k)
 		out = append(out, p)
 	}
 	if len(out) == 0 {
@@ -206,7 +208,7 @@ func Discover(root string, extraAllowed []string) model.Instance {
 		var index map[string]struct {
 			Name string `json:"name"`
 		}
-		if json.Unmarshal(bytes.TrimPrefix(names,[]byte{0xef,0xbb,0xbf}), &index) == nil {
+		if json.Unmarshal(bytes.TrimPrefix(names, []byte{0xef, 0xbb, 0xbf}), &index) == nil {
 			for pi := range inst.Profiles {
 				for ii := range inst.Profiles[pi].Inventory {
 					item := &inst.Profiles[pi].Inventory[ii]
@@ -230,6 +232,7 @@ func Discover(root string, extraAllowed []string) model.Instance {
 			if json.Unmarshal(b, &v) == nil {
 				inst.Version = v.Version
 				inst.ProcessRunning = v.Running
+				inst.ProcessVerified = v.Version != ""
 			}
 		}
 	}

@@ -31,6 +31,12 @@ func Open(path, password, primary, secondary string) (*Store, error) {
 	if _, err = db.Exec("PRAGMA busy_timeout=5000;" + migrations.Initial); err != nil {
 		return fail(err)
 	}
+	if _, err = db.Exec(migrations.AgentMode); err != nil {
+		return fail(err)
+	}
+	if _, err = db.Exec("UPDATE notification_outbox SET state='unknown',detail='服务重启，发送结果待核实；可人工重试' WHERE state='sending'"); err != nil {
+		return fail(err)
+	}
 	if path != ":memory:" {
 		if err = os.Chmod(path, 0600); err != nil {
 			return fail(err)

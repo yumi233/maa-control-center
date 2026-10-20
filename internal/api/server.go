@@ -14,20 +14,28 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yumi233/maa-control-center/internal/assistant"
 	"github.com/yumi233/maa-control-center/internal/model"
+	"github.com/yumi233/maa-control-center/internal/notify"
 	"github.com/yumi233/maa-control-center/internal/storage"
+	"github.com/yumi233/maa-control-center/internal/vault"
 	"golang.org/x/crypto/bcrypt"
 )
 
 type Config struct {
 	PublicURL, AgentID, AgentToken string
 	Assets                         fs.FS
+	Vault                          *vault.Vault
 }
 type Server struct {
-	Store    *storage.Store
-	cfg      Config
-	mu       sync.Mutex
-	attempts map[string]attempt
+	Store         *storage.Store
+	cfg           Config
+	mu            sync.Mutex
+	attempts      map[string]attempt
+	Integrations  assistant.SettingsStore
+	Notifications *notify.Service
+	LLM           assistant.ClientAPI
+	planMu        sync.Mutex
 }
 type attempt struct {
 	count int
@@ -35,7 +43,9 @@ type attempt struct {
 }
 
 func New(store *storage.Store, cfg Config) *Server {
-	return &Server{Store: store, cfg: cfg, attempts: map[string]attempt{}}
+	s := &Server{Store: store, cfg: cfg, attempts: map[string]attempt{}, Integrations: assistant.SettingsStore{DB: store.DB, Vault: cfg.Vault}}
+	s.Notifications = &notify.Service{Settings: s.Integrations}
+	return s
 }
 func token() string {
 	b := make([]byte, 32)
@@ -123,12 +133,13 @@ func (s *Server) protect(next http.HandlerFunc) http.HandlerFunc {
 }
 func (s *Server) Handler() http.Handler {
 	m := http.NewServeMux()
+	s.integrationRoutes(m)
 	m.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		if err := s.Store.DB.PingContext(r.Context()); err != nil {
 			problem(w, 503, "database_unavailable", "数据库不可用")
 			return
 		}
-		send(w, 200, map[string]any{"status": "ok", "version": "0.1.0", "mode": "read_only"})
+		send(w, 200, map[string]any{"status": "ok", "version": "0.2.0", "mode": "reviewed_configuration"})
 	})
 	m.HandleFunc("POST /api/v1/auth/login", s.login)
 	m.HandleFunc("GET /api/v1/auth/session", s.protect(func(w http.ResponseWriter, r *http.Request) {
@@ -205,7 +216,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("POST /api/v1/jobs", s.protect(s.readOnly))
 	m.HandleFunc("POST /api/v1/jobs/{id}/cancel", s.protect(s.readOnly))
 	m.HandleFunc("GET /api/v1/settings", s.protect(func(w http.ResponseWriter, r *http.Request) {
-		send(w, 200, map[string]any{"mode": "read_only", "version": "0.1.0", "database": "SQLite WAL", "agent_paired": len(s.cfg.AgentToken) >= 32, "scheduler_owner": "existing_maa", "remote_control": false, "configuration_sync": false})
+		send(w, 200, map[string]any{"mode": "reviewed_configuration", "version": "0.2.0", "database": "SQLite WAL", "agent_paired": len(s.cfg.AgentToken) >= 32, "scheduler_owner": "existing_maa", "remote_control": false, "configuration_sync": true})
 	}))
 	m.HandleFunc("POST /api/v1/agent/heartbeat", s.heartbeat)
 	// Production dispatch is intentionally unavailable until installed-version capability checks pass.
@@ -316,7 +327,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		s.result(w, nil, err)
 		return
 	}
-	send(w, 200, map[string]any{"accounts": a, "agents": agents, "events": events, "jobs": []any{}, "server_time": time.Now().UTC().Format(time.RFC3339), "mode": "read_only", "version": "0.1.0"})
+	send(w, 200, map[string]any{"accounts": a, "agents": agents, "events": events, "jobs": []any{}, "server_time": time.Now().UTC().Format(time.RFC3339), "mode": "reviewed_configuration", "version": "0.2.0"})
 }
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if !s.originOK(r) {
@@ -401,6 +412,10 @@ func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request) {
 		s.result(w, nil, err)
 		return
 	}
+	if err := s.observedCompletions(h); err != nil {
+		problem(w, 500, "completion_store_failed", "任务结束事件暂未保存，将由下次心跳重试")
+		return
+	}
 	send(w, 200, map[string]any{"accepted": true, "mode": "read_only", "server_time": time.Now().UTC().Format(time.RFC3339)})
 }
 func containsSecret(v string) bool {
@@ -438,5 +453,5 @@ func (s *Server) preview(w http.ResponseWriter, r *http.Request) {
 			errors = append(errors, "预算不在有效范围")
 		}
 	}
-	send(w, 200, map[string]any{"original": a.Policy, "proposed": p, "errors": errors, "valid": len(errors) == 0, "applicable": false, "message": "仅预览；Windows 配置同步尚未验证"})
+	send(w, 200, map[string]any{"original": a.Policy, "proposed": p, "errors": errors, "valid": len(errors) == 0, "applicable": false, "message": "此预算摘要仅预览；应用请使用 Agent 配置的逐字段方案"})
 }

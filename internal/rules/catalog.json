@@ -1,0 +1,255 @@
+{
+  "version": "maa-6.20-r1",
+  "supported_versions": [
+    "6.20"
+  ],
+  "source": "https://github.com/MaaAssistantArknights/MaaAssistantArknights/tree/v6.20.0/src/MaaWpfGui/Configuration/Single/MaaTask",
+  "invariants": [
+    "Only explicit listed business fields may change; unknown fields must survive.",
+    "Never change account identity, connection, file paths, credentials, timers or remote control.",
+    "Secondary account: zero ordinary medicine and stone in every combat/depot task, including disabled tasks; expiring medicine fixed to 48 hours.",
+    "All changes need a reviewed diff and approval; apply only while MAA is stopped and source SHA-256 matches.",
+    "One file per approved change; backup first; rollback only if the applied file has not changed.",
+    "Stage availability, operator ownership and game login cannot be inferred from configuration."
+  ],
+  "tasks": {
+    "Fight": {
+      "bool": [
+        "IsEnable",
+        "UseMedicine",
+        "UseStone",
+        "EnableTargetDrop",
+        "IsInventoryTarget",
+        "EnableTimesLimit",
+        "IsDrGrandet",
+        "UseExpiringMedicine",
+        "UseExpireMedicineForActivity",
+        "UseCustomAnnihilation",
+        "UseOptionalStage"
+      ],
+      "int": {
+        "MedicineCount": [
+          0,
+          999
+        ],
+        "StoneCount": [
+          0,
+          99
+        ],
+        "DropCount": [
+          0,
+          1000000
+        ],
+        "TimesLimit": [
+          1,
+          10000
+        ],
+        "Series": [
+          0,
+          6
+        ],
+        "MedicineExpireDays": [
+          2,
+          2
+        ]
+      },
+      "string": [
+        "DropId",
+        "AnnihilationStage"
+      ],
+      "strings": [
+        "StagePlan"
+      ]
+    },
+    "DepotMaintain": {
+      "bool": [
+        "IsEnable",
+        "UpdateDepot",
+        "SkipDuringActivity",
+        "SkipDuringResourceCollection",
+        "OnlyFirstInsufficientPlan",
+        "SortByProgress",
+        "UseAutoSeries",
+        "UseMedicine",
+        "UseStone",
+        "UseExpiringMedicine"
+      ]
+    },
+    "Infrast": {
+      "bool": [
+        "IsEnable",
+        "DormTrustEnabled",
+        "OriginiumShardAutoReplenishment",
+        "DormFilterNotStationed",
+        "ReceptionMessageBoard",
+        "ReceptionClueExchange",
+        "SendClue",
+        "ContinueTraining",
+        "FiammettaRecoveryEnabled"
+      ],
+      "int": {
+        "DormThreshold": [
+          0,
+          100
+        ],
+        "PlanSelect": [
+          -1,
+          63
+        ]
+      },
+      "enum": {
+        "UsesOfDrones": [
+          "_NotUse",
+          "Money",
+          "SyntheticJade",
+          "CombatRecord",
+          "PureGold",
+          "OriginStone",
+          "Chip"
+        ]
+      }
+    },
+    "Recruit": {
+      "bool": [
+        "IsEnable",
+        "UseExpedited",
+        "PreferTagEnabled",
+        "PreserveTagEnabled",
+        "RefreshLevel3",
+        "ForceRefresh",
+        "Level3Choose",
+        "Level3RecruitmentPermitReserveEnabled",
+        "Level4Choose",
+        "Level5Choose",
+        "Level6Choose"
+      ],
+      "int": {
+        "MaxTimes": [
+          0,
+          100
+        ],
+        "ExtraTagMode": [
+          0,
+          2
+        ],
+        "Level3RecruitmentPermitReserve": [
+          0,
+          10000
+        ],
+        "Level3Time": [
+          60,
+          540
+        ],
+        "Level4Time": [
+          60,
+          540
+        ]
+      },
+      "strings": [
+        "Level3PreferTags",
+        "PreserveTagList"
+      ]
+    },
+    "Mall": {
+      "bool": [
+        "IsEnable",
+        "Shopping",
+        "CreditFight",
+        "CreditFightOnceADay",
+        "VisitFriends",
+        "VisitFriendsOnceADay",
+        "ShoppingIgnoreBlackListWhenFull",
+        "OnlyBuyDiscount",
+        "ReserveMaxCredit"
+      ],
+      "int": {
+        "CreditFightFormation": [
+          0,
+          4
+        ]
+      },
+      "string": [
+        "FirstList",
+        "BlackList"
+      ]
+    },
+    "Award": {
+      "bool": [
+        "IsEnable",
+        "Award",
+        "Mail",
+        "FreeGacha",
+        "Orundum",
+        "Mining",
+        "SpecialAccess",
+        "SignInEvent"
+      ]
+    },
+    "UserDataUpdate": {
+      "bool": [
+        "IsEnable"
+      ]
+    }
+  },
+  "plan": {
+    "bool": [
+      "UseMedicine",
+      "UseStone"
+    ],
+    "int": {
+      "DropCount": [
+        0,
+        1000000
+      ],
+      "MedicineCount": [
+        0,
+        999
+      ],
+      "StoneCount": [
+        0,
+        99
+      ]
+    },
+    "string": [
+      "Stage",
+      "DropId"
+    ]
+  },
+  "schedule": {
+    "fields": [
+      "operators",
+      "candidates",
+      "skip"
+    ],
+    "rooms": [
+      "control",
+      "manufacture",
+      "trading",
+      "power",
+      "meeting",
+      "hire",
+      "dormitory",
+      "processing",
+      "training"
+    ]
+  },
+  "unsupported": [
+    "StartUp identity changes",
+    "Gui and Timers",
+    "custom scripts",
+    "arbitrary JSON paths",
+    "Roguelike/Reclamation/Custom task edits",
+    "schedule file path changes",
+    "automatic originium production switch",
+    "unverified MAA versions"
+  ],
+  "operations": {
+    "task": "Set a listed task field",
+    "plan": "Set a listed field of an existing depot plan",
+    "plan_add": "Add one depot plan; value requires Stage, DropId, DropCount. Single operation.",
+    "plan_remove": "Remove an existing plan only if it contains no unknown fields. Single operation.",
+    "plan_order": "Reorder all depot plan objects by original zero-based indices. Single operation.",
+    "order": "Reorder all original task objects, keep StartUp first. Single operation.",
+    "schedule": "Set an existing room operators/candidates list or skip flag"
+  }
+}

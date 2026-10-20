@@ -1,13 +1,150 @@
 openapi: 3.1.0
 info:
   title: MAA Control Center API
-  version: 0.1.0
-  description: Read-only MVP. No production dispatch or configuration writes. All dates use RFC3339 UTC.
+  version: 0.2.0
+  description: Reviewed configuration plans with local Windows safety checks; MAA task dispatch remains disabled. All dates use RFC3339 UTC. See docs/agent-mode.md for operation scopes and setup.
 servers:
   - url: /
 security:
   - session: []
 paths:
+  /api/v1/integrations:
+    get:
+      summary: Encrypted integration settings, returned without keys; configured booleans only
+      responses:
+        '200': {description: 'provider, channels[], creative; no API or channel secrets'}
+    put:
+      security: [{session: [], csrf: []}]
+      summary: Save provider and Telegram/QQ settings; blank key preserves, clear_key removes
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, required: [provider, channels, creative]}
+      responses:
+        '200': {description: Encrypted settings saved}
+        '422': {$ref: '#/components/responses/Error'}
+  /api/v1/integrations/provider/test:
+    post:
+      security: [{session: [], csrf: []}]
+      summary: Explicitly call saved exact model and verify JSON capability
+      responses:
+        '200': {description: 'ok, model'}
+        '422': {$ref: '#/components/responses/Error'}
+  /api/v1/integrations/notifications/test:
+    post:
+      security: [{session: [], csrf: []}]
+      summary: Queue a clearly marked test for enabled saved channels
+      responses:
+        '202': {description: Test queued}
+        '422': {$ref: '#/components/responses/Error'}
+  /api/v1/integrations/notifications:
+    get:
+      summary: Last 100 persistent delivery receipts
+      responses:
+        '200': {description: 'id, event_id, channel, state, detail, message, created_at'}
+  /api/v1/integrations/notifications/{id}/retry:
+    parameters: [{$ref: '#/components/parameters/ResourceID'}]
+    post:
+      security: [{session: [], csrf: []}]
+      summary: Retry failed/unknown delivery only with confirm=true; duplicates possible
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, required: [confirm], properties: {confirm: {const: true}}}
+      responses:
+        '202': {description: Explicit retry queued}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/assistant/rules:
+    get:
+      summary: Versioned MAA field catalog and invariants
+      responses:
+        '200': {description: Machine readable maa-6.20-r1 catalog}
+  /api/v1/accounts/{id}/assistant/propose:
+    parameters: [{$ref: '#/components/parameters/AccountID'}]
+    post:
+      security: [{session: [], csrf: []}]
+      summary: Call configured model using redacted context and validate proposal, without applying
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [intent, target]
+              properties:
+                intent: {type: string, maxLength: 2000}
+                target: {enum: [config, schedule]}
+      responses:
+        '201': {description: Draft with operations and deterministic diff, expires in 10 minutes}
+        '422': {$ref: '#/components/responses/Error'}
+  /api/v1/accounts/{id}/config/preview:
+    parameters: [{$ref: '#/components/parameters/AccountID'}]
+    post:
+      security: [{session: [], csrf: []}]
+      summary: Validate structured target and operations without a model call; never applies
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, required: [target, operations]}
+      responses:
+        '201': {description: Draft with reviewed diff}
+        '422': {$ref: '#/components/responses/Error'}
+  /api/v1/config/plans:
+    get:
+      summary: Most recent 100 configuration drafts and outcomes
+      responses:
+        '200': {description: Independent per-account plan records}
+  /api/v1/config/plans/{id}/approve:
+    parameters: [{$ref: '#/components/parameters/ResourceID'}]
+    post:
+      security: [{session: [], csrf: []}]
+      summary: Approve exact plan ID after reviewing diff; requires stopped MAA, unchanged source and opted-in Windows agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, required: [confirm], properties: {confirm: {type: string}}}
+      responses:
+        '202': {description: Approved and queued for Windows revalidation}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/config/plans/{id}/rollback:
+    parameters: [{$ref: '#/components/parameters/ResourceID'}]
+    post:
+      security: [{session: [], csrf: []}]
+      summary: Create reverse diff draft; requires separate approval, matching applied hash and local backup
+      responses:
+        '201': {description: Rollback draft, not applied}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/config/plans/{id}/cancel:
+    parameters: [{$ref: '#/components/parameters/ResourceID'}]
+    post:
+      security: [{session: [], csrf: []}]
+      summary: Cancel a draft or still-queued plan; dispatched operations cannot be revoked
+      responses:
+        '200': {description: Cancelled}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/agent/config/commands:
+    get:
+      security: [{agentToken: []}]
+      summary: Read approved commands for paired agent; retry uses same ID and durable local journal
+      responses:
+        '200': {description: Up to four commands, each bound to discovered instance/profile and reviewed diff}
+        '401': {$ref: '#/components/responses/Error'}
+  /api/v1/agent/config/receipts:
+    post:
+      security: [{agentToken: []}]
+      summary: Persist terminal configuration outcome and enqueue idempotent notifications
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, required: [id, state, message, before_hash, after_hash, time]}
+      responses:
+        '200': {description: Outcome persisted}
+        '422': {$ref: '#/components/responses/Error'}
   /health:
     get:
       security: []
@@ -208,6 +345,7 @@ components:
     csrf: {type: apiKey, in: header, name: X-CSRF-Token}
     agentToken: {type: http, scheme: bearer}
   parameters:
+    ResourceID: {name: id, in: path, required: true, schema: {type: string, pattern: "^[a-f0-9]{64}$"}}
     AccountID: {name: id, in: path, required: true, schema: {type: string, enum: [primary, secondary]}}
   schemas:
     Account:

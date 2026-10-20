@@ -19,6 +19,7 @@ type Profile struct {
 	Schedule     json.RawMessage `json:"schedule,omitempty"`
 	ScheduleHash string          `json:"schedule_hash"`
 	Inventory    []InventoryItem `json:"inventory"`
+	Editable     json.RawMessage `json:"editable,omitempty"`
 }
 
 type InventoryItem struct {
@@ -35,24 +36,35 @@ type InventoryItem struct {
 }
 
 type Instance struct {
-	ID              string          `json:"id"`
-	Name            string          `json:"name"`
-	Version         string          `json:"version"`
-	ProcessRunning  bool            `json:"process_running"`
-	State           string          `json:"state"`
-	DeviceConnected *bool           `json:"device_connected"`
-	Fingerprint     string          `json:"fingerprint"`
-	Profiles        []Profile       `json:"profiles"`
-	Schedule        json.RawMessage `json:"schedule,omitempty"`
-	Logs            []string        `json:"logs"`
+	ID                 string          `json:"id"`
+	Name               string          `json:"name"`
+	Version            string          `json:"version"`
+	ProcessRunning     bool            `json:"process_running"`
+	ProcessVerified    bool            `json:"process_verified"`
+	ConfigurationWrite bool            `json:"configuration_write"`
+	State              string          `json:"state"`
+	DeviceConnected    *bool           `json:"device_connected"`
+	Fingerprint        string          `json:"fingerprint"`
+	Profiles           []Profile       `json:"profiles"`
+	Schedule           json.RawMessage `json:"schedule,omitempty"`
+	Logs               []string        `json:"logs"`
 }
 
 type Heartbeat struct {
-	AgentID   string     `json:"agent_id"`
-	Hostname  string     `json:"hostname"`
-	OS        string     `json:"os"`
-	Version   string     `json:"version"`
-	Instances []Instance `json:"instances"`
+	AgentID     string       `json:"agent_id"`
+	Hostname    string       `json:"hostname"`
+	OS          string       `json:"os"`
+	Version     string       `json:"version"`
+	Instances   []Instance   `json:"instances"`
+	Completions []Completion `json:"completions,omitempty"`
+}
+
+type Completion struct {
+	ID         string `json:"id"`
+	InstanceID string `json:"instance_id"`
+	State      string `json:"state"`
+	ObservedAt string `json:"observed_at"`
+	Source     string `json:"source"`
 }
 
 type Binding struct {

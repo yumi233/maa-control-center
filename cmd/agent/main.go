@@ -14,11 +14,13 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/yumi233/maa-control-center/internal/agent"
+	"github.com/yumi233/maa-control-center/internal/configsync"
 	"github.com/yumi233/maa-control-center/internal/model"
 )
 
@@ -38,22 +40,30 @@ func main() {
 	interval := flag.Duration("interval", 25*time.Second, "heartbeat interval (minimum 10 seconds)")
 	out := flag.String("snapshot", "", "write a local, redacted discovery snapshot instead of connecting")
 	flag.Parse()
+	runner := configsync.Runner{}
+	stateDir := ""
 	if *configPath != "" {
 		b, err := os.ReadFile(*configPath)
 		if err != nil {
 			log.Fatal("cannot read agent configuration")
 		}
 		var cfg struct {
-			Server        string   `json:"server"`
-			Token         string   `json:"token"`
-			AgentID       string   `json:"agent_id"`
-			MAADirs       []string `json:"maa_dirs"`
-			AllowReadDirs []string `json:"allow_read_dirs"`
-			CA            string   `json:"ca"`
+			Server           string            `json:"server"`
+			Token            string            `json:"token"`
+			AgentID          string            `json:"agent_id"`
+			MAADirs          []string          `json:"maa_dirs"`
+			AllowReadDirs    []string          `json:"allow_read_dirs"`
+			CA               string            `json:"ca"`
+			AllowConfigWrite bool              `json:"allow_config_write"`
+			StateDir         string            `json:"state_dir"`
+			ProfileRoles     map[string]string `json:"profile_roles"`
 		}
 		if json.Unmarshal(b, &cfg) != nil {
 			log.Fatal("invalid agent configuration")
 		}
+		runner.Enabled = cfg.AllowConfigWrite
+		runner.Roles = cfg.ProfileRoles
+		stateDir = cfg.StateDir
 		if *server == "" {
 			*server = cfg.Server
 		}
@@ -109,10 +119,32 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 	host, _ := os.Hostname()
+	if stateDir == "" && *configPath != "" {
+		stateDir = filepath.Join(filepath.Dir(*configPath), "agent-state")
+	}
+	runner.Roots = roots
+	runner.Allowed = allowed
+	runner.BackupDir = filepath.Join(stateDir, "configuration-backups")
+	var watchSince time.Time
+	if stateDir != "" {
+		var e error
+		watchSince, e = agent.WatchSince(filepath.Join(stateDir, "completion-watch.json"))
+		if e != nil {
+			log.Print("completion watcher unavailable; configuration unchanged")
+		}
+	}
 	for {
-		h := model.Heartbeat{AgentID: *id, Hostname: host, OS: runtime.GOOS, Version: "0.1.0", Instances: []model.Instance{}}
+		h := model.Heartbeat{AgentID: *id, Hostname: host, OS: runtime.GOOS, Version: "0.2.0", Instances: []model.Instance{}}
 		for _, root := range roots {
-			h.Instances = append(h.Instances, agent.Discover(root, allowed))
+			inst := agent.Discover(root, allowed)
+			inst.ConfigurationWrite = runner.Enabled && len(runner.Roles) > 0
+			h.Instances = append(h.Instances, inst)
+			if !watchSince.IsZero() {
+				h.Completions = append(h.Completions, agent.Completions(root, inst.ID, watchSince)...)
+			}
+		}
+		if len(h.Completions) > 20 {
+			h.Completions = h.Completions[len(h.Completions)-20:]
 		}
 		data, err := json.Marshal(h)
 		if err != nil {
@@ -141,7 +173,10 @@ func main() {
 				err = fmt.Errorf("heartbeat rejected: HTTP %d", res.StatusCode)
 				log.Print(err)
 			} else {
-				log.Printf("read-only heartbeat accepted; installations=%d", len(h.Instances))
+				log.Printf("heartbeat accepted; installations=%d", len(h.Instances))
+				if !*once {
+					syncCommands(ctx, client, *server, &runner)
+				}
 			}
 		}
 		if *once {
@@ -155,5 +190,50 @@ func main() {
 			return
 		case <-time.After(*interval):
 		}
+	}
+}
+
+func syncCommands(ctx context.Context, client *http.Client, server string, runner *configsync.Runner) {
+	req, e := http.NewRequestWithContext(ctx, "GET", strings.TrimRight(server, "/")+"/api/v1/agent/config/commands", nil)
+	if e != nil {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+os.Getenv("MAACC_AGENT_TOKEN"))
+	res, e := client.Do(req)
+	if e != nil {
+		return
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		return
+	}
+	var commands []configsync.Command
+	if json.NewDecoder(io.LimitReader(res.Body, 256<<10)).Decode(&commands) != nil || len(commands) > 4 {
+		return
+	}
+	for _, cmd := range commands {
+		receipt := runner.Execute(cmd)
+		if receipt.State == "busy" {
+			log.Print("configuration operation already locked; waiting for existing result")
+			continue
+		}
+		b, e := json.Marshal(receipt)
+		if e != nil {
+			continue
+		}
+		r, e := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(server, "/")+"/api/v1/agent/config/receipts", bytes.NewReader(b))
+		if e != nil {
+			continue
+		}
+		r.Header.Set("Authorization", "Bearer "+os.Getenv("MAACC_AGENT_TOKEN"))
+		r.Header.Set("Content-Type", "application/json")
+		response, e := client.Do(r)
+		if e != nil {
+			log.Print("configuration receipt pending; local journal prevents replay")
+			continue
+		}
+		io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		response.Body.Close()
+		log.Printf("configuration operation state=%s receipt_http=%d", receipt.State, response.StatusCode)
 	}
 }

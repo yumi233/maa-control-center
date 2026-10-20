@@ -2,7 +2,17 @@
   "server": "https://nas.example.local:18443",
   "agent_id": "windows-agent",
   "token": "REPLACE_WITH_A_UNIQUE_RANDOM_TOKEN_AT_LEAST_32_CHARACTERS",
-  "maa_dirs": ["D:\\YourExistingMAA"],
-  "allow_read_dirs": ["D:\\YourExistingSchedules"],
-  "ca": "C:\\YourControlCenter\\ca.pem"
+  "maa_dirs": [
+    "D:\\YourExistingMAA"
+  ],
+  "allow_read_dirs": [
+    "D:\\YourExistingSchedules"
+  ],
+  "ca": "C:\\YourControlCenter\\ca.pem",
+  "allow_config_write": false,
+  "state_dir": "C:\\MAAControlCenter\\agent-state",
+  "profile_roles": {
+    "your-primary-profile": "primary",
+    "your-secondary-profile": "secondary"
+  }
 }
