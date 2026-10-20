@@ -9,7 +9,10 @@ bin/
 node_modules/
 web/node_modules/
 web/dist/
+internal/ui/dist/*
+!internal/ui/dist/.gitkeep
 web/.vite/
+*.tsbuildinfo
 web/coverage/
 *.db
 *.db-shm

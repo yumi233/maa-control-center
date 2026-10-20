@@ -1,0 +1,4 @@
+*
+!bin/
+!bin/maa-server-linux-amd64
+!Dockerfile

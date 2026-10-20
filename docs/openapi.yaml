@@ -1,0 +1,245 @@
+openapi: 3.1.0
+info:
+  title: MAA Control Center API
+  version: 0.1.0
+  description: Read-only MVP. No production dispatch or configuration writes. All dates use RFC3339 UTC.
+servers:
+  - url: /
+security:
+  - session: []
+paths:
+  /health:
+    get:
+      security: []
+      summary: Application and SQLite health
+      responses:
+        '200': {description: 'Healthy; status, version, mode'}
+        '503': {$ref: '#/components/responses/Error'}
+  /api/v1/auth/login:
+    post:
+      security: []
+      summary: Login; validates origin and applies per-client rate limit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: {type: string}
+                password: {type: string, format: password}
+      responses:
+        '200': {description: 'HttpOnly SameSite=Strict session cookie; JSON csrf_token for subsequent writes'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+  /api/v1/auth/session:
+    get:
+      summary: Current admin session and CSRF token
+      responses:
+        '200': {description: 'username and csrf_token'}
+        '401': {$ref: '#/components/responses/Error'}
+  /api/v1/auth/logout:
+    post:
+      security: [{session: [], csrf: []}]
+      summary: Revoke session and expire cookie
+      responses:
+        '200': {description: Session revoked}
+        '403': {$ref: '#/components/responses/Error'}
+  /api/v1/overview:
+    get:
+      summary: Real accounts, agents, events, empty production queue and server time
+      responses:
+        '200': {description: 'accounts[], agents[], events[], jobs[], server_time, mode, version'}
+        '401': {$ref: '#/components/responses/Error'}
+  /api/v1/accounts:
+    get:
+      summary: Independent account observations
+      responses:
+        '200':
+          description: Account list
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Account'}}
+  /api/v1/accounts/{id}/status:
+    parameters: [{$ref: '#/components/parameters/AccountID'}]
+    get:
+      summary: Single account; process presence never proves running task
+      responses:
+        '200': {description: Account observation}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/accounts/{id}/policies:
+    parameters: [{$ref: '#/components/parameters/AccountID'}]
+    get:
+      summary: Observed policy, required constraints and writable=false
+      responses:
+        '200': {description: 'observed, required, writable'}
+    put:
+      security: [{session: [], csrf: []}]
+      summary: Production writes are disabled
+      responses:
+        '423': {$ref: '#/components/responses/Error'}
+  /api/v1/accounts/{id}/policies/preview:
+    parameters: [{$ref: '#/components/parameters/AccountID'}]
+    post:
+      security: [{session: [], csrf: []}]
+      summary: Preview original and proposed budget without saving
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Policy'}
+      responses:
+        '200': {description: 'original, proposed, valid, errors[], applicable=false'}
+        '400': {$ref: '#/components/responses/Error'}
+  /api/v1/accounts/{id}/binding:
+    parameters: [{$ref: '#/components/parameters/AccountID'}]
+    post:
+      security: [{session: [], csrf: []}]
+      summary: Confirm an actually discovered profile; writes only Web database
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id, instance_id, profile_id]
+              properties:
+                agent_id: {type: string}
+                instance_id: {type: string}
+                profile_id: {type: string}
+      responses:
+        '200': {description: Read-only binding saved}
+        '422': {$ref: '#/components/responses/Error'}
+  /api/v1/accounts/{id}/inventory:
+    parameters: [{$ref: '#/components/parameters/AccountID'}]
+    get:
+      summary: Existing targets; unattributed current inventory remains null
+      responses:
+        '200': {description: 'items[], source, stale=true, message'}
+  /api/v1/accounts/{id}/schedule:
+    parameters: [{$ref: '#/components/parameters/AccountID'}]
+    get:
+      summary: Original per-profile base schedule with extension fields preserved
+      responses:
+        '200': {description: 'schedule or null, read_only=true, source'}
+  /api/v1/accounts/{id}/logs:
+    parameters: [{$ref: '#/components/parameters/AccountID'}]
+    get:
+      summary: Redacted instance log tail, not an inferred per-account log
+      responses:
+        '200': {description: 'lines[], redacted=true'}
+  /api/v1/events:
+    get:
+      summary: Up to 200 most recent Control Center events
+      responses:
+        '200': {description: 'id, time, level, account_id, message'}
+  /api/v1/agents:
+    get:
+      summary: Discovered installations and profiles; never returns pairing token
+      responses:
+        '200': {description: Agent observations}
+  /api/v1/settings:
+    get:
+      summary: Read-only system capabilities without secrets
+      responses:
+        '200': {description: System capability flags}
+  /api/v1/jobs:
+    get:
+      summary: Production queue; empty in read-only MVP
+      responses:
+        '200': {description: Empty array}
+    post:
+      security: [{session: [], csrf: []}]
+      summary: Live task dispatch remains locked
+      responses:
+        '423': {$ref: '#/components/responses/Error'}
+  /api/v1/jobs/{id}:
+    parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+    get:
+      summary: No live jobs exist in read-only MVP
+      responses:
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/jobs/{id}/cancel:
+    parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+    post:
+      security: [{session: [], csrf: []}]
+      summary: Live cancellation remains locked
+      responses:
+        '423': {$ref: '#/components/responses/Error'}
+  /api/v1/agent/heartbeat:
+    post:
+      security: [{agentToken: []}]
+      summary: Pre-paired Agent read-only heartbeat; 2 MiB maximum
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id, hostname, os, version, instances]
+              properties:
+                agent_id: {type: string}
+                hostname: {type: string, maxLength: 128}
+                os: {type: string}
+                version: {type: string}
+                instances: {type: array, maxItems: 16, items: {type: object}}
+      responses:
+        '200': {description: 'accepted=true, mode=read_only, server_time'}
+        '401': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+  /maa/remote/getTask:
+    post:
+      security: []
+      summary: Official protocol endpoint reserved but disabled; user/device are not authentication
+      responses:
+        '423': {$ref: '#/components/responses/Error'}
+  /maa/remote/reportStatus:
+    post:
+      security: []
+      summary: Official report endpoint reserved but disabled
+      responses:
+        '423': {$ref: '#/components/responses/Error'}
+components:
+  securitySchemes:
+    session: {type: apiKey, in: cookie, name: maacc_session}
+    csrf: {type: apiKey, in: header, name: X-CSRF-Token}
+    agentToken: {type: http, scheme: bearer}
+  parameters:
+    AccountID: {name: id, in: path, required: true, schema: {type: string, enum: [primary, secondary]}}
+  schemas:
+    Account:
+      type: object
+      properties:
+        id: {type: string}
+        name: {type: string}
+        role: {type: string}
+        status: {type: string, enum: [offline, idle, queued, running, stopping, unknown, error]}
+        bound: {type: boolean}
+        agent_online: {type: boolean}
+        last_seen: {type: string}
+        instance: {type: [object, 'null']}
+        profile: {type: [object, 'null']}
+        policy: {$ref: '#/components/schemas/Policy'}
+    Policy:
+      type: object
+      properties:
+        medicine_budget: {type: [integer, 'null'], minimum: 0, maximum: 10000}
+        stone_budget: {type: [integer, 'null'], minimum: 0, maximum: 10000}
+        expiring_hours: {type: [integer, 'null'], enum: [0, 48, null]}
+        source: {type: string}
+        verified: {type: boolean}
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error: {type: string, description: 'unauthorized, csrf, read_only, not_paired, invalid_json, binding_invalid, storage_error, rate_limited, not_found'}
+        message: {type: string}
+  responses:
+    Error:
+      description: Request rejected; no production operation is performed
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
