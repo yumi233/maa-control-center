@@ -11,6 +11,6 @@ defineProps<{agentOnline: boolean; maaRunning: boolean; connected: boolean; demo
       <div class="graph-node" :class="{active: maaRunning}"><Cpu :size="24"/><strong>MAA</strong><small>{{ maaRunning ? '进程存在' : '未运行 / 未知' }}</small></div><div class="graph-wire"><span></span><ChevronRight :size="13"/></div>
       <div class="graph-node" :class="{active: connected}"><Smartphone :size="24"/><strong>DEVICE</strong><small>{{ connected ? '已验证连接' : '连接待确认' }}</small></div>
     </div>
-    <div class="graph-note"><span class="tiny-square"></span>{{ demo ? '演示数据 / 不连接实际设备' : 'MAA 负责执行，控制中心负责观察。' }}</div>
+    <div class="graph-note"><span class="tiny-square"></span>{{ demo ? '演示数据 / 不连接实际设备' : 'MAA 负责执行，控制中心管理配置与计划。' }}</div>
   </div>
 </template>

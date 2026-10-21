@@ -198,6 +198,23 @@ func Discover(root string, extraAllowed []string) model.Instance {
 		return inst
 	}
 	inst.Fingerprint = hash(data)
+	var runtimeConfig struct {
+		Current string
+		Timers  struct {
+			List []struct {
+				ID        int `json:"Id"`
+				Config    string
+				Hour      int
+				Minute    int
+				IsEnabled bool
+			}
+		}
+	}
+	_ = json.Unmarshal(bytes.TrimPrefix(data, []byte{0xef, 0xbb, 0xbf}), &runtimeConfig)
+	inst.CurrentProfile = runtimeConfig.Current
+	for _, t := range runtimeConfig.Timers.List {
+		inst.NativeTimers = append(inst.NativeTimers, model.NativeTimer{ID: t.ID, ProfileID: t.Config, Hour: t.Hour, Minute: t.Minute, Enabled: t.IsEnabled})
+	}
 	allowed := append([]string{root}, extraAllowed...)
 	inst.Profiles, err = Parse(data, allowed)
 	if err != nil {

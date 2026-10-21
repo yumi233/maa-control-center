@@ -44,6 +44,32 @@ func (s *Server) visibleAccounts(r *http.Request) ([]model.Account, error) {
 		return nil, e
 	}
 	u := s.currentUser(r)
+	rows, err := s.Store.DB.Query("SELECT account_id,state FROM jobs WHERE state IN ('pending','dispatched','waiting','starting','running','stopping','unknown') ORDER BY created_at DESC")
+	if err != nil {
+		return nil, err
+	}
+	states := map[string]string{}
+	for rows.Next() {
+		var id, state string
+		if rows.Scan(&id, &state) == nil {
+			if _, ok := states[id]; !ok {
+				states[id] = state
+			}
+		}
+	}
+	rows.Close()
+	for i := range all {
+		switch states[all[i].ID] {
+		case "pending", "dispatched", "waiting", "starting":
+			all[i].Status = "queued"
+		case "running":
+			all[i].Status = "running"
+		case "stopping":
+			all[i].Status = "stopping"
+		case "unknown":
+			all[i].Status = "unknown"
+		}
+	}
 	if u.Role == "admin" {
 		return all, nil
 	}
@@ -58,6 +84,16 @@ func (s *Server) visibleAccounts(r *http.Request) ([]model.Account, error) {
 				// Shared process logs and instance schedules do not establish account ownership.
 				a.Instance.Logs = []string{}
 				a.Instance.Schedule = nil
+				if a.Profile != nil && a.Instance.CurrentProfile != a.Profile.ID {
+					a.Instance.CurrentProfile = ""
+				}
+				filtered := []model.NativeTimer{}
+				for _, timer := range a.Instance.NativeTimers {
+					if a.Profile != nil && timer.ProfileID == a.Profile.ID {
+						filtered = append(filtered, timer)
+					}
+				}
+				a.Instance.NativeTimers = filtered
 			}
 			out = append(out, a)
 		}
@@ -97,7 +133,11 @@ func (s *Server) visibleAgents(r *http.Request) ([]map[string]any, error) {
 }
 func (s *Server) accountIdle(id string) bool {
 	var n int
-	e := s.Store.DB.QueryRow("SELECT count(*) FROM config_plans WHERE account_id=? AND state IN ('queued','dispatched','unknown')", id).Scan(&n)
+	e := s.Store.DB.QueryRow("SELECT count(*) FROM config_plans WHERE account_id=? AND state IN ('queued','waiting','dispatched','unknown')", id).Scan(&n)
+	if e != nil || n != 0 {
+		return false
+	}
+	e = s.Store.DB.QueryRow("SELECT count(*) FROM jobs WHERE account_id=? AND state IN "+activeJobs, id).Scan(&n)
 	return e == nil && n == 0
 }
 
@@ -314,6 +354,21 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	// Password reset, disabling and role changes immediately revoke existing sessions.
 	if hash != "" || in.Disabled || in.Role != old.Role {
+		if _, e = tx.Exec("UPDATE scheduled_tasks SET enabled=0 WHERE owner_id=?", id); e != nil {
+			s.result(w, nil, e)
+			return
+		}
+		if _, e = tx.Exec("UPDATE jobs SET state='cancelled',detail='用户权限变化，未执行' WHERE owner_id=? AND state='pending'", id); e != nil {
+			s.result(w, nil, e)
+			return
+		}
+		if in.Disabled {
+			if _, e = tx.Exec("UPDATE jobs SET cancel_requested=1 WHERE owner_id=? AND state IN "+activeJobs, id); e != nil {
+				s.result(w, nil, e)
+				return
+			}
+		}
+
 		if _, e = tx.Exec("DELETE FROM sessions WHERE user_id=?", id); e != nil {
 			s.result(w, nil, e)
 			return
@@ -362,8 +417,21 @@ func (s *Server) updateAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 	if in.OwnerID != a.OwnerID {
+		var jobCount int
+		if tx.QueryRow("SELECT count(*) FROM jobs WHERE account_id=? AND state IN "+activeJobs, a.ID).Scan(&jobCount) != nil || jobCount > 0 {
+			problem(w, 409, "account_busy", "此账号有运行或待核实任务，请先处理再转交")
+			return
+		}
+		if _, e = tx.Exec("UPDATE scheduled_tasks SET enabled=0 WHERE account_id=?", a.ID); e != nil {
+			s.result(w, nil, e)
+			return
+		}
+		if _, e = tx.Exec("UPDATE jobs SET state='cancelled',detail='账号转交，原计划取消' WHERE account_id=? AND state='pending'", a.ID); e != nil {
+			s.result(w, nil, e)
+			return
+		}
 		var n int
-		if tx.QueryRow("SELECT count(*) FROM config_plans WHERE account_id=? AND state IN ('queued','dispatched','unknown')", a.ID).Scan(&n) != nil || n != 0 {
+		if tx.QueryRow("SELECT count(*) FROM config_plans WHERE account_id=? AND state IN ('queued','waiting','dispatched','unknown')", a.ID).Scan(&n) != nil || n != 0 {
 			problem(w, 409, "account_busy", "请先取消待执行方案或核实 Windows 处理结果，再转交账号")
 			return
 		}

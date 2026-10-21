@@ -17,7 +17,7 @@ func TestTunnelAndLANOriginsKeepCSRFProtection(t *testing.T) {
 		r.AddCookie(cookie)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)
-		if w.Code != 423 {
+		if w.Code != 422 {
 			t.Fatalf("approved origin rejected: %d", w.Code)
 		}
 		r = httptest.NewRequest("POST", "/api/v1/jobs", strings.NewReader(`{}`))

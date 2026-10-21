@@ -16,26 +16,29 @@ import (
 )
 
 type ConfigPlan struct {
-	OwnerID      string            `json:"owner_id"`
-	CreatedBy    string            `json:"created_by"`
-	ApprovedBy   string            `json:"approved_by"`
-	ID           string            `json:"id"`
-	AccountID    string            `json:"account_id"`
-	AgentID      string            `json:"agent_id"`
-	InstanceID   string            `json:"instance_id"`
-	ProfileID    string            `json:"profile_id"`
-	Target       string            `json:"target"`
-	BeforeHash   string            `json:"before_hash"`
-	Operations   []rules.Operation `json:"operations"`
-	Diff         []rules.Diff      `json:"diff"`
-	Summary      string            `json:"summary"`
-	RulesVersion string            `json:"rules_version"`
-	State        string            `json:"state"`
-	CreatedAt    string            `json:"created_at"`
-	ExpiresAt    string            `json:"expires_at"`
-	RollbackOf   string            `json:"rollback_of"`
-	AfterHash    string            `json:"after_hash"`
-	Receipt      string            `json:"receipt"`
+	Silent              bool              `json:"silent"`
+	ProjectionHash      string            `json:"projection_hash,omitempty"`
+	AfterProjectionHash string            `json:"after_projection_hash,omitempty"`
+	OwnerID             string            `json:"owner_id"`
+	CreatedBy           string            `json:"created_by"`
+	ApprovedBy          string            `json:"approved_by"`
+	ID                  string            `json:"id"`
+	AccountID           string            `json:"account_id"`
+	AgentID             string            `json:"agent_id"`
+	InstanceID          string            `json:"instance_id"`
+	ProfileID           string            `json:"profile_id"`
+	Target              string            `json:"target"`
+	BeforeHash          string            `json:"before_hash"`
+	Operations          []rules.Operation `json:"operations"`
+	Diff                []rules.Diff      `json:"diff"`
+	Summary             string            `json:"summary"`
+	RulesVersion        string            `json:"rules_version"`
+	State               string            `json:"state"`
+	CreatedAt           string            `json:"created_at"`
+	ExpiresAt           string            `json:"expires_at"`
+	RollbackOf          string            `json:"rollback_of"`
+	AfterHash           string            `json:"after_hash"`
+	Receipt             string            `json:"receipt"`
 }
 
 func (s *Server) integrationRoutes(m *http.ServeMux) {
@@ -141,7 +144,7 @@ func (s *Server) integrationRoutes(m *http.ServeMux) {
 			problem(w, 404, "not_found", "方案不存在")
 			return
 		}
-		res, e := s.Store.DB.Exec("UPDATE config_plans SET state='cancelled' WHERE id=? AND state IN ('draft','queued')", r.PathValue("id"))
+		res, e := s.Store.DB.Exec("UPDATE config_plans SET state='cancelled' WHERE id=? AND state IN ('draft','queued','waiting')", r.PathValue("id"))
 		if e != nil {
 			problem(w, 500, "database_error", "无法取消方案")
 			return
@@ -236,14 +239,15 @@ func (s *Server) previewConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	var in struct {
 		Target     string            `json:"target"`
+		Silent     bool              `json:"silent"`
 		Operations []rules.Operation `json:"operations"`
 	}
 	if !decode(w, r, &in) {
 		return
 	}
-	s.createConfigPlan(w, r, a, in.Target, in.Operations, "用户通过结构化操作建立的差异预览")
+	s.createConfigPlan(w, r, a, in.Target, in.Operations, "用户通过结构化操作建立的差异预览", in.Silent)
 }
-func (s *Server) createConfigPlan(w http.ResponseWriter, r *http.Request, a *model.Account, target string, ops []rules.Operation, summary string) {
+func (s *Server) createConfigPlan(w http.ResponseWriter, r *http.Request, a *model.Account, target string, ops []rules.Operation, summary string, silent ...bool) {
 	b, e := s.bound(a)
 	if e != nil {
 		problem(w, 422, "not_ready", e.Error())
@@ -257,6 +261,8 @@ func (s *Server) createConfigPlan(w http.ResponseWriter, r *http.Request, a *mod
 			return
 		}
 		result, e = rules.Apply(rules.Synthetic(a.Profile.Editable), "target", a.Role, a.Instance.Version, ops)
+	} else if target == "timers" {
+		result, e = rules.ApplyTimers(timerDocument(a.Instance), a.Profile.ID, a.Instance.Version, ops)
 	} else if target == "schedule" {
 		hash = a.Profile.ScheduleHash
 		result, e = rules.ApplySchedule(a.Profile.Schedule, a.Instance.Version, ops)
@@ -271,7 +277,15 @@ func (s *Server) createConfigPlan(w http.ResponseWriter, r *http.Request, a *mod
 		problem(w, 422, "missing_fingerprint", "配置指纹无效")
 		return
 	}
-	p := ConfigPlan{OwnerID: a.OwnerID, CreatedBy: s.currentUser(r).ID, ApprovedBy: "admin", ID: token(), AccountID: a.ID, AgentID: b.AgentID, InstanceID: b.InstanceID, ProfileID: b.ProfileID, Target: target, BeforeHash: hash, Operations: ops, Diff: result.Diff, Summary: summary, RulesVersion: rules.Version, State: "draft", CreatedAt: time.Now().UTC().Format(time.RFC3339), ExpiresAt: time.Now().Add(10 * time.Minute).UTC().Format(time.RFC3339)}
+	p := ConfigPlan{Silent: len(silent) > 0 && silent[0], ProjectionHash: func() string {
+		if target == "config" {
+			return rules.Hash(a.Profile.Editable)
+		}
+		if target == "timers" {
+			return rules.Hash(rules.TimerProjection(timerDocument(a.Instance), a.Profile.ID))
+		}
+		return ""
+	}(), OwnerID: a.OwnerID, CreatedBy: s.currentUser(r).ID, ApprovedBy: "admin", ID: token(), AccountID: a.ID, AgentID: b.AgentID, InstanceID: b.InstanceID, ProfileID: b.ProfileID, Target: target, BeforeHash: hash, Operations: ops, Diff: result.Diff, Summary: summary, RulesVersion: rules.Version, State: "draft", CreatedAt: time.Now().UTC().Format(time.RFC3339), ExpiresAt: time.Now().Add(10 * time.Minute).UTC().Format(time.RFC3339)}
 	if e = s.insertPlan(p); e != nil {
 		problem(w, 500, "database_error", "无法保存预览方案")
 		return
@@ -291,7 +305,7 @@ func (s *Server) insertPlan(p ConfigPlan) error {
 
 	o, _ := json.Marshal(p.Operations)
 	d, _ := json.Marshal(p.Diff)
-	res, e := s.Store.DB.Exec("INSERT INTO config_plans(id,account_id,agent_id,instance_id,profile_id,target,before_hash,operations,diff,summary,rules_version,state,created_at,expires_at,rollback_of,owner_id,created_by,approved_by) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM accounts WHERE id=? AND owner_id=?) AND EXISTS (SELECT 1 FROM users WHERE id=? AND disabled=0)", p.ID, p.AccountID, p.AgentID, p.InstanceID, p.ProfileID, p.Target, p.BeforeHash, string(o), string(d), p.Summary, p.RulesVersion, p.State, p.CreatedAt, p.ExpiresAt, p.RollbackOf, p.OwnerID, p.CreatedBy, p.ApprovedBy, p.AccountID, p.OwnerID, p.CreatedBy)
+	res, e := s.Store.DB.Exec("INSERT INTO config_plans(id,account_id,agent_id,instance_id,profile_id,target,before_hash,operations,diff,summary,rules_version,state,created_at,expires_at,rollback_of,owner_id,created_by,approved_by,projection_hash,silent) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM accounts WHERE id=? AND owner_id=?) AND EXISTS (SELECT 1 FROM users WHERE id=? AND disabled=0)", p.ID, p.AccountID, p.AgentID, p.InstanceID, p.ProfileID, p.Target, p.BeforeHash, string(o), string(d), p.Summary, p.RulesVersion, p.State, p.CreatedAt, p.ExpiresAt, p.RollbackOf, p.OwnerID, p.CreatedBy, p.ApprovedBy, p.ProjectionHash, p.Silent, p.AccountID, p.OwnerID, p.CreatedBy)
 	if e == nil {
 		n, _ := res.RowsAffected()
 		if n != 1 {
@@ -305,7 +319,7 @@ func (s *Server) scopedPlans(id, owner string) ([]ConfigPlan, error) {
 	return s.listPlans(id, owner, false)
 }
 func (s *Server) listPlans(id, owner string, delivery bool) ([]ConfigPlan, error) {
-	query := "SELECT id,account_id,agent_id,instance_id,profile_id,target,before_hash,operations,diff,summary,rules_version,state,created_at,expires_at,rollback_of,after_hash,receipt,owner_id,created_by,approved_by FROM config_plans"
+	query := "SELECT id,account_id,agent_id,instance_id,profile_id,target,before_hash,operations,diff,summary,rules_version,state,created_at,expires_at,rollback_of,after_hash,receipt,owner_id,created_by,approved_by,projection_hash,after_projection_hash,silent FROM config_plans"
 	args := []any{}
 	if id != "" {
 		query += " WHERE id=?"
@@ -321,7 +335,7 @@ func (s *Server) listPlans(id, owner string, delivery bool) ([]ConfigPlan, error
 		args = append(args, owner, owner)
 	}
 	if delivery {
-		query += " WHERE state IN ('queued','dispatched') AND agent_id=? ORDER BY created_at ASC LIMIT 100"
+		query += " WHERE state IN ('queued','waiting','dispatched') AND agent_id=? ORDER BY created_at ASC LIMIT 100"
 		args = append(args, s.cfg.AgentID)
 	} else {
 		query += " ORDER BY created_at DESC LIMIT 100"
@@ -335,7 +349,7 @@ func (s *Server) listPlans(id, owner string, delivery bool) ([]ConfigPlan, error
 	for rows.Next() {
 		var p ConfigPlan
 		var o, d string
-		if e = rows.Scan(&p.ID, &p.AccountID, &p.AgentID, &p.InstanceID, &p.ProfileID, &p.Target, &p.BeforeHash, &o, &d, &p.Summary, &p.RulesVersion, &p.State, &p.CreatedAt, &p.ExpiresAt, &p.RollbackOf, &p.AfterHash, &p.Receipt, &p.OwnerID, &p.CreatedBy, &p.ApprovedBy); e != nil {
+		if e = rows.Scan(&p.ID, &p.AccountID, &p.AgentID, &p.InstanceID, &p.ProfileID, &p.Target, &p.BeforeHash, &o, &d, &p.Summary, &p.RulesVersion, &p.State, &p.CreatedAt, &p.ExpiresAt, &p.RollbackOf, &p.AfterHash, &p.Receipt, &p.OwnerID, &p.CreatedBy, &p.ApprovedBy, &p.ProjectionHash, &p.AfterProjectionHash, &p.Silent); e != nil {
 			return nil, e
 		}
 		if json.Unmarshal([]byte(o), &p.Operations) != nil || json.Unmarshal([]byte(d), &p.Diff) != nil {
@@ -398,19 +412,19 @@ func (s *Server) approveConfig(w http.ResponseWriter, r *http.Request) {
 	if p.Target == "schedule" {
 		hash = a.Profile.ScheduleHash
 	}
-	if hash != p.BeforeHash || p.RulesVersion != rules.Version {
+	if (hash != p.BeforeHash && !((p.Target == "config" || p.Target == "timers") && p.ProjectionHash != "" && p.ProjectionHash == rules.Hash(accountProjection(a, p.Target)))) || p.RulesVersion != rules.Version {
 		problem(w, 409, "fingerprint_conflict", "配置已发生变化，请重新预览")
 		return
 	}
-	if !a.Instance.ProcessVerified || a.Instance.ProcessRunning {
-		problem(w, 409, "maa_running", "请先正常退出 MAA，刷新状态后重新预览并确认")
+	if !a.Instance.ProcessVerified {
+		problem(w, 409, "process_unknown", "MAA 进程状态未核实，请刷新")
 		return
 	}
 	if !a.Instance.ConfigurationWrite {
 		problem(w, 409, "agent_write_disabled", "Windows 端尚未启用受控配置写入")
 		return
 	}
-	res, e := s.Store.DB.Exec("UPDATE config_plans SET state='queued',approved_at=?,approved_by=? WHERE id=? AND state='draft' AND EXISTS (SELECT 1 FROM accounts a WHERE a.id=config_plans.account_id AND a.owner_id=config_plans.owner_id) AND EXISTS (SELECT 1 FROM users WHERE id=? AND disabled=0)", time.Now().UTC().Format(time.RFC3339), s.currentUser(r).ID, p.ID, s.currentUser(r).ID)
+	res, e := s.Store.DB.Exec("UPDATE config_plans SET state='queued',approved_at=?,approved_by=?,expires_at=? WHERE id=? AND state='draft' AND EXISTS (SELECT 1 FROM accounts a WHERE a.id=config_plans.account_id AND a.owner_id=config_plans.owner_id) AND EXISTS (SELECT 1 FROM users WHERE id=? AND disabled=0)", time.Now().UTC().Format(time.RFC3339), s.currentUser(r).ID, time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339), p.ID, s.currentUser(r).ID)
 	if e != nil {
 		problem(w, 500, "database_error", "无法确认方案")
 		return
@@ -434,6 +448,12 @@ func (s *Server) rollbackConfig(w http.ResponseWriter, r *http.Request) {
 	if e != nil {
 		problem(w, 409, "not_ready", e.Error())
 		return
+	}
+	if (p.Target == "config" || p.Target == "timers") && p.AfterProjectionHash != "" && rules.Hash(accountProjection(a, p.Target)) == p.AfterProjectionHash {
+		if ops, err := rules.Inverse(p.Operations, p.Diff); err == nil {
+			s.createConfigPlan(w, r, a, p.Target, ops, "回滚此前已确认的字段修改，保留当前其他设置", p.Silent)
+			return
+		}
 	}
 	hash := a.Instance.Fingerprint
 	if p.Target == "schedule" {
@@ -470,7 +490,10 @@ func (s *Server) configCommands(w http.ResponseWriter, r *http.Request) {
 	}
 	out := []configsync.Command{}
 	for _, p := range ps {
-		if p.AgentID != s.cfg.AgentID || (p.State != "queued" && p.State != "dispatched") {
+		if p.AgentID != s.cfg.AgentID || (p.State != "queued" && p.State != "waiting" && p.State != "dispatched") {
+			continue
+		}
+		if s.executionBusy(p.InstanceID) {
 			continue
 		}
 		a, e := s.planAccount(p)
@@ -478,11 +501,11 @@ func (s *Server) configCommands(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if e != nil {
-			_, _ = s.Store.DB.Exec("UPDATE config_plans SET state='conflict',receipt='绑定或 Agent 状态变化，未继续下发' WHERE id=? AND state='queued'", p.ID)
+			_, _ = s.Store.DB.Exec("UPDATE config_plans SET state='conflict',receipt='绑定或 Agent 状态变化，未继续下发' WHERE id=? AND state IN ('queued','waiting')", p.ID)
 			continue
 		}
-		if p.State == "queued" {
-			res, e := s.Store.DB.Exec("UPDATE config_plans SET state='dispatched' WHERE id=? AND state='queued'", p.ID)
+		if p.State == "queued" || p.State == "waiting" {
+			res, e := s.Store.DB.Exec("UPDATE config_plans SET state='dispatched' WHERE id=? AND state IN ('queued','waiting')", p.ID)
 			if e != nil {
 				continue
 			}
@@ -491,7 +514,7 @@ func (s *Server) configCommands(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 		}
-		out = append(out, configsync.Command{ID: p.ID, InstanceID: p.InstanceID, Profile: p.ProfileID, Role: a.Role, Target: p.Target, BeforeHash: p.BeforeHash, RulesVersion: p.RulesVersion, Operations: p.Operations, Diff: p.Diff, ExpiresAt: p.ExpiresAt, RollbackOf: p.RollbackOf})
+		out = append(out, configsync.Command{ID: p.ID, InstanceID: p.InstanceID, Profile: p.ProfileID, Role: a.Role, Target: p.Target, BeforeHash: p.BeforeHash, ProjectionHash: p.ProjectionHash, RulesVersion: p.RulesVersion, Operations: p.Operations, Diff: p.Diff, ExpiresAt: p.ExpiresAt, RollbackOf: p.RollbackOf})
 		if len(out) == 4 {
 			break
 		}
@@ -501,6 +524,15 @@ func (s *Server) configCommands(w http.ResponseWriter, r *http.Request) {
 func (s *Server) configReceipt(w http.ResponseWriter, r *http.Request) {
 	var receipt configsync.Receipt
 	if !decode(w, r, &receipt) {
+		return
+	}
+	if receipt.State == "busy" {
+		if len(receipt.ID) != 64 || len(receipt.Message) > 2000 {
+			problem(w, 422, "invalid_receipt", "等待回执无效")
+			return
+		}
+		_, e := s.Store.DB.Exec("UPDATE config_plans SET state='waiting',receipt=? WHERE id=? AND agent_id=? AND state='dispatched'", receipt.Message, receipt.ID, s.cfg.AgentID)
+		s.result(w, map[string]bool{"ok": true}, e)
 		return
 	}
 	if !receipt.Valid() {
@@ -517,7 +549,7 @@ func (s *Server) configReceipt(w http.ResponseWriter, r *http.Request) {
 		problem(w, 409, "receipt_state_conflict", "回执与已保存状态不一致")
 		return
 	}
-	if receipt.State == "applied" && (receipt.BeforeHash != p.BeforeHash || len(receipt.AfterHash) != 64) {
+	if receipt.State == "applied" && ((receipt.BeforeHash != p.BeforeHash && !(p.ProjectionHash != "" && receipt.RequestHash == p.BeforeHash && len(receipt.BeforeHash) == 64)) || len(receipt.AfterHash) != 64) {
 		problem(w, 422, "hash_mismatch", "回执指纹不匹配")
 		return
 	}
@@ -532,13 +564,15 @@ func (s *Server) configReceipt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
-	result, e := tx.Exec("UPDATE config_plans SET state=?,after_hash=?,receipt=? WHERE id=? AND state='dispatched'", receipt.State, receipt.AfterHash, receipt.Message, p.ID)
+	result, e := tx.Exec("UPDATE config_plans SET state=?,after_hash=?,receipt=?,after_projection_hash=? WHERE id=? AND state='dispatched'", receipt.State, receipt.AfterHash, receipt.Message, receipt.ProjectionHash, p.ID)
 	if e != nil {
 		problem(w, 500, "database_error", "回执存储失败")
 		return
 	}
 	n, _ := result.RowsAffected()
-	e = notify.Enqueue(tx, cfg.Channels, notify.Facts{OwnerID: p.OwnerID, ID: p.ID, Kind: "config", Account: p.AccountID, State: receipt.State, Time: receipt.Time, Detail: receipt.Message, Source: "Windows Agent 备份与重新读取校验"})
+	if !p.Silent {
+		e = notify.Enqueue(tx, cfg.Channels, notify.Facts{OwnerID: p.OwnerID, ID: p.ID, Kind: "config", Account: p.AccountID, State: receipt.State, Time: receipt.Time, Detail: receipt.Message, Source: "Windows Agent 备份与重新读取校验"})
+	}
 	if e != nil {
 		problem(w, 500, "notification_queue_failed", "回执与通知事务未提交，Agent 将用同一回执重试")
 		return
@@ -578,7 +612,24 @@ func (s *Server) Worker(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			_ = s.TickSchedules(time.Now())
 			s.Notifications.Drain(ctx)
 		}
 	}
+}
+
+func timerDocument(inst *model.Instance) []byte {
+	list := []any{}
+	for _, t := range inst.NativeTimers {
+		list = append(list, map[string]any{"Id": t.ID, "Config": t.ProfileID, "Hour": t.Hour, "Minute": t.Minute, "IsEnabled": t.Enabled})
+	}
+	b, _ := json.Marshal(map[string]any{"Timers": map[string]any{"List": list}})
+	return b
+}
+
+func accountProjection(a *model.Account, target string) []byte {
+	if target == "timers" {
+		return rules.TimerProjection(timerDocument(a.Instance), a.Profile.ID)
+	}
+	return a.Profile.Editable
 }

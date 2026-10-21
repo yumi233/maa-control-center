@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: MAA Control Center API
-  version: 0.3.0
-  description: Reviewed configuration plans with local Windows safety checks; MAA task dispatch remains disabled. All dates use RFC3339 UTC. Accounts, plans, settings and notification records are user scoped; administrator-only endpoints reject members. See docs/agent-mode.md for operation scopes and setup.
+  version: 0.4.0
+  description: Reviewed configuration, profile-scoped daily/weekly scheduling and serialized Windows execution. All dates use RFC3339 UTC. Accounts, plans, settings and notification records are user scoped; administrator-only endpoints reject members. See docs/agent-mode.md for operation scopes and setup.
 servers:
   - url: /
 security:
@@ -329,29 +329,72 @@ paths:
       summary: Read-only system capabilities without secrets
       responses:
         '200': {description: System capability flags}
-  /api/v1/jobs:
+  /api/v1/schedules:
     get:
-      summary: Production queue; empty in read-only MVP
+      summary: List owned daily or weekly schedules; Asia/Shanghai
       responses:
-        '200': {description: Empty array}
+        '200': {description: Schedule array with next_run_at}
     post:
       security: [{session: [], csrf: []}]
-      summary: Live task dispatch remains locked
+      summary: Create account_id/name/enabled/hour/minute/weekdays (0 Sunday to 6 Saturday)
       responses:
-        '423': {$ref: '#/components/responses/Error'}
+        '200': {description: Saved schedule}
+        '422': {$ref: '#/components/responses/Error'}
+  /api/v1/schedules/{id}:
+    parameters: [{$ref: '#/components/parameters/ResourceID'}]
+    put:
+      security: [{session: [], csrf: []}]
+      summary: Update owned schedule and recalculate future occurrence
+      responses:
+        '200': {description: Saved schedule}
+    delete:
+      security: [{session: [], csrf: []}]
+      summary: Remove future schedule; pending jobs remain individually cancellable
+      responses:
+        '200': {description: Deleted}
+  /api/v1/jobs/{id}/resolve:
+    parameters: [{$ref: '#/components/parameters/ResourceID'}]
+    post:
+      security: [{session: [], csrf: []}]
+      summary: Confirm unknown job id; request Windows idle verification before releasing
+      responses:
+        '202': {description: Release requested; no replay}
+  /api/v1/agent/jobs/commands:
+    get:
+      security: [{agentToken: []}]
+      summary: Poll one active command per paired agent; run, stop or release
+      responses:
+        '200': {description: Command array; monitor flag never grants replay}
+  /api/v1/agent/jobs/receipts:
+    post:
+      security: [{agentToken: []}]
+      summary: Persist verified job state and enqueue terminal notification atomically; check is silent
+      responses:
+        '200': {description: Receipt accepted}
+  /api/v1/jobs:
+    get:
+      summary: Up to 200 owned jobs with real execution receipts
+      responses:
+        '200': {description: Owned job array}
+    post:
+      security: [{session: [], csrf: []}]
+      summary: Queue daily or check for a bound account; optional Idempotency-Key header
+      responses:
+        '202': {description: Accepted; actual state follows Windows receipt}
   /api/v1/jobs/{id}:
     parameters: [{name: id, in: path, required: true, schema: {type: string}}]
     get:
-      summary: No live jobs exist in read-only MVP
+      summary: Read an owned job including state and detail
       responses:
+        '200': {description: Owned job}
         '404': {$ref: '#/components/responses/Error'}
   /api/v1/jobs/{id}/cancel:
     parameters: [{name: id, in: path, required: true, schema: {type: string}}]
     post:
       security: [{session: [], csrf: []}]
-      summary: Live cancellation remains locked
+      summary: Cancel pending job or request Windows stop confirmation
       responses:
-        '423': {$ref: '#/components/responses/Error'}
+        '202': {description: Accepted; actual state follows Windows receipt}
   /api/v1/agent/heartbeat:
     post:
       security: [{agentToken: []}]

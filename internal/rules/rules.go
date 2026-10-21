@@ -14,7 +14,7 @@ import (
 //go:embed catalog.json
 var Catalog json.RawMessage
 
-const Version = "maa-6.20-r1"
+const Version = "maa-6.20-r2"
 
 type Fields struct {
 	Bool    []string            `json:"bool"`
@@ -464,4 +464,161 @@ func ScheduleProjection(data []byte) any {
 		plans = append(plans, map[string]any{"rooms": rooms})
 	}
 	return map[string]any{"plans": plans}
+}
+
+// ValidateRun checks the actual local profile, never the GUI process name alone.
+func ValidateRun(data []byte, profile, role, version string) error {
+	if !Supported(version) || (role != "primary" && role != "secondary") {
+		return fmt.Errorf("未支持的版本或账号策略")
+	}
+	_, q, e := selected(data, profile)
+	if e != nil {
+		return e
+	}
+	startup := false
+	for _, v := range q {
+		t := object(v)
+		if t["TaskType"] == "StartUp" && t["IsEnable"] == true && t["AccountSwitchEnabled"] == true {
+			name, _ := t["AccountName"].(string)
+			startup = name != ""
+		}
+	}
+	if !startup {
+		return fmt.Errorf("执行前请启用开始唤醒与账号切换，并填写已有启动账号标识")
+	}
+	if role == "secondary" {
+		for _, v := range q {
+			t := object(v)
+			switch t["TaskType"] {
+			case "Fight":
+				for _, pair := range [][2]string{{"UseMedicine", "MedicineCount"}, {"UseStone", "StoneCount"}} {
+					if t[pair[0]] == true {
+						n, ok := integer(t[pair[1]])
+						if !ok || n != 0 {
+							return fmt.Errorf("副号普通药与源石必须为0")
+						}
+					}
+				}
+				if t["UseExpiringMedicine"] == true {
+					if n, ok := integer(t["MedicineExpireDays"]); ok && n != 2 {
+						return fmt.Errorf("副号临期窗口必须为48小时")
+					}
+				}
+			case "DepotMaintain":
+				for _, p := range list(t["PlanList"]) {
+					m := object(p)
+					for _, pair := range [][2]string{{"UseMedicine", "MedicineCount"}, {"UseStone", "StoneCount"}} {
+						if t[pair[0]] == true && m[pair[0]] == true {
+							n, ok := integer(m[pair[1]])
+							if !ok || n != 0 {
+								return fmt.Errorf("副号库存计划不得消耗普通药或源石")
+							}
+						}
+					}
+				}
+			}
+			if (t["TaskType"] == "Fight" || t["TaskType"] == "DepotMaintain") && t["IsEnable"] == true && t["UseExpiringMedicine"] != true {
+				return fmt.Errorf("副号启用作战需保留48小时临期药策略")
+			}
+		}
+	}
+	return nil
+}
+
+func Inverse(ops []Operation, diff []Diff) ([]Operation, error) {
+	out := []Operation{}
+	for _, op := range ops {
+		path := ""
+		switch op.Scope {
+		case "task":
+			path = fmt.Sprintf("TaskQueue[%d].%s", op.Task, op.Field)
+		case "plan":
+			path = fmt.Sprintf("TaskQueue[%d].PlanList[%d].%s", op.Task, op.Plan, op.Field)
+		case "timer":
+			path = fmt.Sprintf("Timers.List[%d].%s", op.Index, op.Field)
+		default:
+			return nil, fmt.Errorf("此类结构修改需要原文件备份回滚")
+		}
+		for _, d := range diff {
+			if d.Path == path {
+				if d.Before == nil {
+					return nil, fmt.Errorf("原字段不存在，需要备份恢复")
+				}
+				op.Value = d.Before
+				out = append(out, op)
+				break
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("没有可逆字段")
+	}
+	return out, nil
+}
+
+func TimerProjection(data []byte, profile string) json.RawMessage {
+	var doc map[string]any
+	d := json.NewDecoder(bytes.NewReader(bytes.TrimPrefix(data, []byte{0xef, 0xbb, 0xbf})))
+	d.UseNumber()
+	if d.Decode(&doc) != nil {
+		return nil
+	}
+	out := []any{}
+	for _, v := range list(object(doc["Timers"])["List"]) {
+		t := object(v)
+		if t["Config"] == profile {
+			out = append(out, map[string]any{"Id": t["Id"], "Config": t["Config"], "Hour": t["Hour"], "Minute": t["Minute"], "IsEnabled": t["IsEnabled"]})
+		}
+	}
+	b, _ := json.Marshal(out)
+	return b
+}
+func ApplyTimers(data []byte, profile, version string, ops []Operation) (Result, error) {
+	if !Supported(version) || len(ops) == 0 || len(ops) > 24 {
+		return Result{}, fmt.Errorf("定时修改版本或数量无效")
+	}
+	var doc map[string]any
+	d := json.NewDecoder(bytes.NewReader(bytes.TrimPrefix(data, []byte{0xef, 0xbb, 0xbf})))
+	d.UseNumber()
+	if d.Decode(&doc) != nil {
+		return Result{}, fmt.Errorf("配置无效")
+	}
+	fields := Fields{Bool: []string{"IsEnabled"}, Int: map[string][2]int{"Hour": {0, 23}, "Minute": {0, 59}}}
+	diff := []Diff{}
+	seen := map[string]bool{}
+	for _, op := range ops {
+		if op.Scope != "timer" || !valid(fields, op.Field, op.Value) {
+			return Result{}, fmt.Errorf("仅可调整本账号已有定时的开关和时间")
+		}
+		var target map[string]any
+		for _, v := range list(object(doc["Timers"])["List"]) {
+			t := object(v)
+			id, ok := integer(t["Id"])
+			if ok && id == op.Index && t["Config"] == profile {
+				target = t
+				break
+			}
+		}
+		if target == nil {
+			return Result{}, fmt.Errorf("定时项不属于此配置档")
+		}
+		path := fmt.Sprintf("Timers.List[%d].%s", op.Index, op.Field)
+		if seen[path] {
+			return Result{}, fmt.Errorf("重复字段")
+		}
+		seen[path] = true
+		if same(target[op.Field], op.Value) {
+			continue
+		}
+		diff = append(diff, Diff{path, target[op.Field], op.Value})
+		target[op.Field] = op.Value
+	}
+	if len(diff) == 0 {
+		return Result{}, fmt.Errorf("没有配置变化")
+	}
+	b, e := json.MarshalIndent(doc, "", "  ")
+	if bytes.HasPrefix(data, []byte{0xef, 0xbb, 0xbf}) {
+		b = append([]byte{0xef, 0xbb, 0xbf}, b...)
+	}
+	return Result{b, diff}, e
 }

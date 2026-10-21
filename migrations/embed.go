@@ -10,3 +10,6 @@ var AgentMode string
 
 //go:embed 003_multi_user.sql
 var MultiUser string
+
+//go:embed 004_execution.sql
+var Execution string

@@ -52,8 +52,14 @@ func (s *Server) observedCompletions(h model.Heartbeat) error {
 		}
 		n, _ := res.RowsAffected()
 		if n == 1 {
-			if e = notify.Enqueue(tx, cfg.Channels, notify.Facts{ID: c.ID, Kind: "maa_queue", Account: "MAA 实例 " + c.InstanceID + "（账号归属未核实）", State: c.State, Time: c.ObservedAt, Detail: title, Source: "MAA 6.20 中文 GUI 队列结束日志"}); e != nil {
+			var managed int
+			if e = tx.QueryRow("SELECT count(*) FROM jobs WHERE instance_id=? AND state IN "+activeJobs, c.InstanceID).Scan(&managed); e != nil {
 				return e
+			}
+			if managed == 0 {
+				if e = notify.Enqueue(tx, cfg.Channels, notify.Facts{ID: c.ID, Kind: "maa_queue", Account: "MAA 实例 " + c.InstanceID + "（账号归属未核实）", State: c.State, Time: c.ObservedAt, Detail: title, Source: "MAA 6.20 中文 GUI 队列结束日志"}); e != nil {
+					return e
+				}
 			}
 			events = append(events, title)
 		}

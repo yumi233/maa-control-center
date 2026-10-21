@@ -129,3 +129,37 @@ func TestDiffMismatchAndInstanceLockRejectWrite(t *testing.T) {
 		t.Fatal("concurrent operation did not wait")
 	}
 }
+
+func TestIdleReloadMergesRuntimeOnlyChangesAndPreservesBackup(t *testing.T) {
+	r, c, path, original := syncFixture(t)
+	c.ProjectionHash = rules.Hash(rules.Projection(original, c.Profile))
+	running := true
+	resumed := false
+	r.Probe = func(string, []string) model.Instance {
+		return model.Instance{ID: instance, Version: "6.20.0", ProcessVerified: true, ProcessRunning: running}
+	}
+	r.Prepare = func(string) (func(), error) {
+		running = false
+		var doc map[string]json.RawMessage
+		json.Unmarshal(original, &doc)
+		doc["runtime"] = json.RawMessage(`{"counter":1}`)
+		b, _ := json.Marshal(doc)
+		os.WriteFile(path, b, 0600)
+		return func() { resumed = true }, nil
+	}
+	rec := r.Execute(c)
+	if rec.State != "applied" || !resumed || rec.RequestHash != c.BeforeHash || rec.BeforeHash == c.BeforeHash {
+		t.Fatalf("reload merge failed %+v", rec)
+	}
+	b, _ := os.ReadFile(path)
+	if !bytes.Contains(b, []byte(`"runtime"`)) {
+		t.Fatal("runtime settings overwritten")
+	}
+	// Real business edits after preview must still conflict, even with projection fallback.
+	r, c, path, original = syncFixture(t)
+	c.ProjectionHash = rules.Hash(rules.Projection(original, c.Profile))
+	os.WriteFile(path, bytes.ReplaceAll(original, []byte(`"MaxTimes":3`), []byte(`"MaxTimes":9`)), 0600)
+	if rec = r.Execute(c); rec.State != "conflict" {
+		t.Fatal("stale business values silently overwritten")
+	}
+}

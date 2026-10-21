@@ -35,7 +35,18 @@ type InventoryItem struct {
 	ObservedAt string `json:"observed_at"`
 }
 
+type NativeTimer struct {
+	ID        int    `json:"id"`
+	ProfileID string `json:"profile_id"`
+	Hour      int    `json:"hour"`
+	Minute    int    `json:"minute"`
+	Enabled   bool   `json:"enabled"`
+}
+
 type Instance struct {
+	TaskExecution      bool            `json:"task_execution"`
+	CurrentProfile     string          `json:"current_profile"`
+	NativeTimers       []NativeTimer   `json:"native_timers"`
 	ID                 string          `json:"id"`
 	Name               string          `json:"name"`
 	Version            string          `json:"version"`

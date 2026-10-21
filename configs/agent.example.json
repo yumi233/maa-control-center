@@ -10,6 +10,7 @@
   ],
   "ca": "C:\\YourControlCenter\\ca.pem",
   "allow_config_write": false,
+  "allow_task_control": false,
   "state_dir": "C:\\MAAControlCenter\\agent-state",
   "profile_roles": {
     "your-primary-profile": "primary",

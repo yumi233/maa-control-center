@@ -91,3 +91,32 @@ func TestInventoryAddRemoveAndOrderKeepRules(t *testing.T) {
 		t.Fatal("new plan bypassed secondary stone policy")
 	}
 }
+
+func TestNativeTimersAreProfileScopedAndReversible(t *testing.T) {
+	src := []byte(`{"future":9007199254740993,"Timers":{"ForceScheduledStart":true,"List":[{"Id":3,"Config":"one","Hour":8,"Minute":0,"IsEnabled":true,"future":true},{"Id":4,"Config":"two","Hour":10,"Minute":0,"IsEnabled":false}]}}`)
+	ops := []Operation{{Scope: "timer", Index: 3, Field: "Minute", Value: 15.0}}
+	r, e := ApplyTimers(src, "one", "6.20.0", ops)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if !strings.Contains(string(r.Data), "9007199254740993") || !strings.Contains(string(r.Data), `"future": true`) {
+		t.Fatal("unknown fields lost")
+	}
+	if _, e = ApplyTimers(src, "two", "6.20.0", ops); e == nil {
+		t.Fatal("cross-profile timer write")
+	}
+	inv, e := Inverse(ops, r.Diff)
+	if e != nil {
+		t.Fatal(e)
+	}
+	restored, e := ApplyTimers(r.Data, "one", "6.20.0", inv)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if string(TimerProjection(restored.Data, "one")) != string(TimerProjection(src, "one")) {
+		t.Fatal("rollback changed original timers")
+	}
+	if string(TimerProjection(r.Data, "two")) != string(TimerProjection(src, "two")) {
+		t.Fatal("other profile timer changed")
+	}
+}

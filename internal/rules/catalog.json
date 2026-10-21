@@ -1,12 +1,12 @@
 {
-  "version": "maa-6.20-r1",
+  "version": "maa-6.20-r2",
   "supported_versions": [
     "6.20"
   ],
   "source": "https://github.com/MaaAssistantArknights/MaaAssistantArknights/tree/v6.20.0/src/MaaWpfGui/Configuration/Single/MaaTask",
   "invariants": [
     "Only explicit listed business fields may change; unknown fields must survive.",
-    "Never change account identity, connection, file paths, credentials, timers or remote control.",
+    "Business edits preserve account identity, credentials, connection, file paths and unknown fields. Existing per-profile native timers allow only time and enable changes.",
     "Secondary account: zero ordinary medicine and stone in every combat/depot task, including disabled tasks; expiring medicine fixed to 48 hours.",
     "All changes need a reviewed diff and approval; apply only while MAA is stopped and source SHA-256 matches.",
     "One file per approved change; backup first; rollback only if the applied file has not changed.",
@@ -189,6 +189,12 @@
       "bool": [
         "IsEnable"
       ]
+    },
+    "StartUp": {
+      "bool": [
+        "IsEnable",
+        "AccountSwitchEnabled"
+      ]
     }
   },
   "plan": {
@@ -235,13 +241,13 @@
   },
   "unsupported": [
     "StartUp identity changes",
-    "Gui and Timers",
     "custom scripts",
     "arbitrary JSON paths",
     "Roguelike/Reclamation/Custom task edits",
     "schedule file path changes",
     "automatic originium production switch",
-    "unverified MAA versions"
+    "unverified MAA versions",
+    "Gui credentials, paths and timer profile reassignment"
   ],
   "operations": {
     "task": "Set a listed task field",
@@ -250,6 +256,7 @@
     "plan_remove": "Remove an existing plan only if it contains no unknown fields. Single operation.",
     "plan_order": "Reorder all depot plan objects by original zero-based indices. Single operation.",
     "order": "Reorder all original task objects, keep StartUp first. Single operation.",
-    "schedule": "Set an existing room operators/candidates list or skip flag"
+    "schedule": "Set an existing room operators/candidates list or skip flag",
+    "timer": "Update enable/hour/minute of an existing native timer belonging to this profile"
   }
 }

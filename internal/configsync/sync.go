@@ -15,25 +15,28 @@ import (
 )
 
 type Command struct {
-	ID           string            `json:"id"`
-	InstanceID   string            `json:"instance_id"`
-	Profile      string            `json:"profile"`
-	Role         string            `json:"role"`
-	Target       string            `json:"target"`
-	BeforeHash   string            `json:"before_hash"`
-	RulesVersion string            `json:"rules_version"`
-	Operations   []rules.Operation `json:"operations"`
-	Diff         []rules.Diff      `json:"diff"`
-	ExpiresAt    string            `json:"expires_at"`
-	RollbackOf   string            `json:"rollback_of,omitempty"`
+	ProjectionHash string            `json:"projection_hash,omitempty"`
+	ID             string            `json:"id"`
+	InstanceID     string            `json:"instance_id"`
+	Profile        string            `json:"profile"`
+	Role           string            `json:"role"`
+	Target         string            `json:"target"`
+	BeforeHash     string            `json:"before_hash"`
+	RulesVersion   string            `json:"rules_version"`
+	Operations     []rules.Operation `json:"operations"`
+	Diff           []rules.Diff      `json:"diff"`
+	ExpiresAt      string            `json:"expires_at"`
+	RollbackOf     string            `json:"rollback_of,omitempty"`
 }
 type Receipt struct {
-	ID         string `json:"id"`
-	State      string `json:"state"`
-	Message    string `json:"message"`
-	BeforeHash string `json:"before_hash"`
-	AfterHash  string `json:"after_hash"`
-	Time       string `json:"time"`
+	RequestHash    string `json:"request_hash,omitempty"`
+	ProjectionHash string `json:"projection_hash,omitempty"`
+	ID             string `json:"id"`
+	State          string `json:"state"`
+	Message        string `json:"message"`
+	BeforeHash     string `json:"before_hash"`
+	AfterHash      string `json:"after_hash"`
+	Time           string `json:"time"`
 }
 type journal struct {
 	Command Command `json:"command"`
@@ -45,6 +48,7 @@ type Runner struct {
 	BackupDir      string
 	Roles          map[string]string
 	Probe          func(string, []string) model.Instance
+	Prepare        func(string) (func(), error)
 }
 
 var safeID = regexp.MustCompile(`^[a-f0-9]{64}$`)
@@ -96,7 +100,7 @@ func (r *Runner) Execute(c Command) Receipt {
 			break
 		}
 	}
-	if root == "" || !inst.ProcessVerified || inst.ProcessRunning || !rules.Supported(inst.Version) {
+	if root == "" || !inst.ProcessVerified || !rules.Supported(inst.Version) {
 		out.Message = "需要已核实的 MAA 6.20 完全退出后重新预览"
 		return out
 	}
@@ -117,6 +121,28 @@ func (r *Runner) Execute(c Command) Receipt {
 	}
 	lf.Close()
 	defer os.Remove(lock)
+	if inst.ProcessRunning {
+		if r.Prepare == nil {
+			out.State = "busy"
+			out.Message = "MAA 尚未退出，等待空闲后应用"
+			return out
+		}
+		resume, e := r.Prepare(root)
+		if e != nil {
+			out.State = "busy"
+			out.Message = e.Error()
+			return out
+		}
+		if resume != nil {
+			defer resume()
+		}
+		inst = probe(root, r.Allowed)
+		if !inst.ProcessVerified || inst.ProcessRunning {
+			out.State = "busy"
+			out.Message = "MAA 退出尚未确认"
+			return out
+		}
+	}
 	path := filepath.Join(root, "config", "gui.new.json")
 	if c.Target == "schedule" {
 		b, e := agent.ReadBounded(path, 2<<20)
@@ -167,7 +193,7 @@ func (r *Runner) Execute(c Command) Receipt {
 				}
 			}
 		}
-	} else if c.Target != "config" {
+	} else if c.Target != "config" && c.Target != "timers" {
 		out.Message = "未知文件目标"
 		return out
 	}
@@ -183,11 +209,12 @@ func (r *Runner) Execute(c Command) Receipt {
 		return out
 	}
 	out.BeforeHash = rules.Hash(original)
-	if out.BeforeHash != c.BeforeHash {
+	if out.BeforeHash != c.BeforeHash && !((c.Target == "config" || c.Target == "timers") && c.ProjectionHash != "" && rules.Hash(commandProjection(c.Target, original, c.Profile)) == c.ProjectionHash) {
 		out.State = "conflict"
 		out.Message = "配置已变化，旧方案已拒绝；请重新预览"
 		return out
 	}
+	out.RequestHash = c.BeforeHash
 	var next []byte
 	if c.RollbackOf != "" {
 		if !safeID.MatchString(c.RollbackOf) {
@@ -215,7 +242,9 @@ func (r *Runner) Execute(c Command) Receipt {
 		}
 	} else {
 		var result rules.Result
-		if c.Target == "schedule" {
+		if c.Target == "timers" {
+			result, err = rules.ApplyTimers(original, c.Profile, inst.Version, c.Operations)
+		} else if c.Target == "schedule" {
 			result, err = rules.ApplySchedule(original, inst.Version, c.Operations)
 		} else {
 			result, err = rules.Apply(original, c.Profile, c.Role, inst.Version, c.Operations)
@@ -258,7 +287,7 @@ func (r *Runner) Execute(c Command) Receipt {
 	}
 	live := probe(root, r.Allowed)
 	current, e := agent.ReadBounded(path, 2<<20)
-	if !live.ProcessVerified || live.ProcessRunning || e != nil || rules.Hash(current) != c.BeforeHash {
+	if !live.ProcessVerified || live.ProcessRunning || e != nil || rules.Hash(current) != out.BeforeHash {
 		out.State = "conflict"
 		out.Message = "写入前 MAA 状态或配置发生变化"
 		_ = save(record, journal{c, out})
@@ -272,6 +301,9 @@ func (r *Runner) Execute(c Command) Receipt {
 	verified, e := agent.ReadBounded(path, 2<<20)
 	if e == nil && rules.Hash(verified) == out.AfterHash {
 		out.State = "applied"
+		if c.Target == "config" || c.Target == "timers" {
+			out.ProjectionHash = rules.Hash(commandProjection(c.Target, verified, c.Profile))
+		}
 		out.Message = "已备份、应用并重新读取校验"
 		if c.RollbackOf != "" {
 			out.Message = "已恢复备份并重新读取校验"
@@ -317,5 +349,15 @@ func tempFile(path string, b []byte) (string, error) {
 func (r Receipt) Valid() bool {
 	states := map[string]bool{"applied": true, "blocked": true, "expired": true, "unknown": true, "conflict": true, "rejected": true}
 	_, e := time.Parse(time.RFC3339, r.Time)
-	return safeID.MatchString(r.ID) && len(r.Message) <= 1024 && states[r.State] && e == nil && (r.BeforeHash == "" || safeID.MatchString(r.BeforeHash)) && (r.AfterHash == "" || safeID.MatchString(r.AfterHash))
+	return safeID.MatchString(r.ID) && len(r.Message) <= 1024 && states[r.State] && e == nil && (r.BeforeHash == "" || safeID.MatchString(r.BeforeHash)) && (r.AfterHash == "" || safeID.MatchString(r.AfterHash)) && (r.RequestHash == "" || safeID.MatchString(r.RequestHash)) && (r.ProjectionHash == "" || safeID.MatchString(r.ProjectionHash))
+}
+
+// AtomicWrite uses the same durable replacement path for local execution journals.
+func AtomicWrite(path string, data []byte) error { return replace(path, data) }
+
+func commandProjection(target string, b []byte, profile string) []byte {
+	if target == "timers" {
+		return rules.TimerProjection(b, profile)
+	}
+	return rules.Projection(b, profile)
 }

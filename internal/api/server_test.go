@@ -68,8 +68,8 @@ func TestAuthenticationCSRFAndReadOnly(t *testing.T) {
 	if w := call(h, "POST", "/api/v1/jobs", `{}`, cookie, ""); w.Code != 403 {
 		t.Fatal("missing CSRF accepted")
 	}
-	if w := call(h, "POST", "/api/v1/jobs", `{}`, cookie, csrf); w.Code != 423 {
-		t.Fatal("production task dispatch not locked")
+	if w := call(h, "POST", "/api/v1/jobs", `{}`, cookie, csrf); w.Code != 422 {
+		t.Fatal("invalid production task accepted")
 	}
 	if w := call(h, "PUT", "/api/v1/accounts/secondary/policies", `{}`, cookie, csrf); w.Code != 423 {
 		t.Fatal("production config write not locked")

@@ -21,6 +21,8 @@ import (
 
 	"github.com/yumi233/maa-control-center/internal/agent"
 	"github.com/yumi233/maa-control-center/internal/configsync"
+	"github.com/yumi233/maa-control-center/internal/desktop"
+	"github.com/yumi233/maa-control-center/internal/jobrunner"
 	"github.com/yumi233/maa-control-center/internal/model"
 )
 
@@ -41,6 +43,7 @@ func main() {
 	out := flag.String("snapshot", "", "write a local, redacted discovery snapshot instead of connecting")
 	flag.Parse()
 	runner := configsync.Runner{}
+	executionEnabled := false
 	stateDir := ""
 	if *configPath != "" {
 		b, err := os.ReadFile(*configPath)
@@ -55,6 +58,7 @@ func main() {
 			AllowReadDirs    []string          `json:"allow_read_dirs"`
 			CA               string            `json:"ca"`
 			AllowConfigWrite bool              `json:"allow_config_write"`
+			AllowTaskControl bool              `json:"allow_task_control"`
 			StateDir         string            `json:"state_dir"`
 			ProfileRoles     map[string]string `json:"profile_roles"`
 		}
@@ -62,6 +66,7 @@ func main() {
 			log.Fatal("invalid agent configuration")
 		}
 		runner.Enabled = cfg.AllowConfigWrite
+		executionEnabled = cfg.AllowTaskControl
 		runner.Roles = cfg.ProfileRoles
 		stateDir = cfg.StateDir
 		if *server == "" {
@@ -125,6 +130,24 @@ func main() {
 	runner.Roots = roots
 	runner.Allowed = allowed
 	runner.BackupDir = filepath.Join(stateDir, "configuration-backups")
+	controller := desktop.Controller{}
+	if executionEnabled {
+		runner.Prepare = controller.Prepare
+	}
+	tasks := &jobrunner.Runner{Enabled: executionEnabled, Roots: roots, Allowed: allowed, Roles: runner.Roles, StateDir: filepath.Join(stateDir, "jobs"), LockDir: runner.BackupDir, Control: controller}
+	if !*once && *out == "" {
+		go func() {
+			for {
+				syncCommands(ctx, client, *server, &runner)
+				syncJobs(ctx, client, *server, tasks)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(5 * time.Second):
+				}
+			}
+		}()
+	}
 	var watchSince time.Time
 	if stateDir != "" {
 		var e error
@@ -134,10 +157,11 @@ func main() {
 		}
 	}
 	for {
-		h := model.Heartbeat{AgentID: *id, Hostname: host, OS: runtime.GOOS, Version: "0.3.0", Instances: []model.Instance{}}
+		h := model.Heartbeat{AgentID: *id, Hostname: host, OS: runtime.GOOS, Version: "0.4.0", Instances: []model.Instance{}}
 		for _, root := range roots {
 			inst := agent.Discover(root, allowed)
 			inst.ConfigurationWrite = runner.Enabled && len(runner.Roles) > 0
+			inst.TaskExecution = executionEnabled && len(runner.Roles) > 0
 			h.Instances = append(h.Instances, inst)
 			if !watchSince.IsZero() {
 				h.Completions = append(h.Completions, agent.Completions(root, inst.ID, watchSince)...)
@@ -174,9 +198,7 @@ func main() {
 				log.Print(err)
 			} else {
 				log.Printf("heartbeat accepted; installations=%d", len(h.Instances))
-				if !*once {
-					syncCommands(ctx, client, *server, &runner)
-				}
+
 			}
 		}
 		if *once {
@@ -213,10 +235,7 @@ func syncCommands(ctx context.Context, client *http.Client, server string, runne
 	}
 	for _, cmd := range commands {
 		receipt := runner.Execute(cmd)
-		if receipt.State == "busy" {
-			log.Print("configuration operation already locked; waiting for existing result")
-			continue
-		}
+
 		b, e := json.Marshal(receipt)
 		if e != nil {
 			continue
@@ -235,5 +254,43 @@ func syncCommands(ctx context.Context, client *http.Client, server string, runne
 		io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
 		response.Body.Close()
 		log.Printf("configuration operation state=%s receipt_http=%d", receipt.State, response.StatusCode)
+	}
+}
+
+func syncJobs(ctx context.Context, client *http.Client, server string, runner *jobrunner.Runner) {
+	req, e := http.NewRequestWithContext(ctx, "GET", strings.TrimRight(server, "/")+"/api/v1/agent/jobs/commands", nil)
+	if e != nil {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+os.Getenv("MAACC_AGENT_TOKEN"))
+	res, e := client.Do(req)
+	if e != nil {
+		return
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		return
+	}
+	var commands []jobrunner.Command
+	if json.NewDecoder(io.LimitReader(res.Body, 64<<10)).Decode(&commands) != nil || len(commands) > 1 {
+		return
+	}
+	for _, command := range commands {
+		receipt := runner.Step(command)
+		b, _ := json.Marshal(receipt)
+		req, e = http.NewRequestWithContext(ctx, "POST", strings.TrimRight(server, "/")+"/api/v1/agent/jobs/receipts", bytes.NewReader(b))
+		if e != nil {
+			return
+		}
+		req.Header.Set("Authorization", "Bearer "+os.Getenv("MAACC_AGENT_TOKEN"))
+		req.Header.Set("Content-Type", "application/json")
+		response, e := client.Do(req)
+		if e != nil {
+			log.Print("execution receipt pending; durable journal prevents duplicate launch")
+			return
+		}
+		io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		response.Body.Close()
+		log.Printf("execution state=%s receipt_http=%d", receipt.State, response.StatusCode)
 	}
 }

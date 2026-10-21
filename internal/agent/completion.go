@@ -88,3 +88,38 @@ func Completions(root, instance string, since time.Time) []model.Completion {
 	}
 	return out
 }
+
+// NativeScheduledSince detects the GUI's own force/switch timers taking over a web run.
+func NativeScheduledSince(root string, since time.Time) bool {
+	f, e := os.Open(filepath.Join(root, "debug", "gui.log"))
+	if e != nil {
+		return false
+	}
+	defer f.Close()
+	st, e := f.Stat()
+	if e != nil {
+		return false
+	}
+	offset := max(int64(0), st.Size()-(256<<10))
+	f.Seek(offset, 0)
+	scan := bufio.NewScanner(f)
+	scan.Buffer(make([]byte, 4096), 128<<10)
+	if offset > 0 {
+		scan.Scan()
+	}
+	for scan.Scan() {
+		line := scan.Text()
+		if len(line) < 25 || !strings.Contains(line, "[TaskQueueViewModel]") || (!strings.Contains(line, "Scheduled start:") && !strings.Contains(line, "Scheduled configuration change:")) {
+			continue
+		}
+		end := strings.Index(line, "]")
+		if end < 2 {
+			continue
+		}
+		at, e := time.ParseInLocation("2006-01-02 15:04:05.000", line[1:end], time.Local)
+		if e == nil && at.After(since) {
+			return true
+		}
+	}
+	return false
+}

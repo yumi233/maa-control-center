@@ -51,6 +51,22 @@ func Open(path, password, primary, secondary string) (*Store, error) {
 			return fail(e)
 		}
 	}
+	if err = db.QueryRow("SELECT count(*) FROM schema_migrations WHERE version=4").Scan(&migrated); err != nil {
+		return fail(err)
+	}
+	if migrated == 0 {
+		tx, e := db.Begin()
+		if e != nil {
+			return fail(e)
+		}
+		if _, e = tx.Exec(migrations.Execution); e != nil {
+			tx.Rollback()
+			return fail(e)
+		}
+		if e = tx.Commit(); e != nil {
+			return fail(e)
+		}
+	}
 	if _, err = db.Exec("UPDATE notification_outbox SET state='unknown',detail='服务重启，发送结果待核实；可人工重试' WHERE state='sending'"); err != nil {
 		return fail(err)
 	}
@@ -86,7 +102,7 @@ func Open(path, password, primary, secondary string) (*Store, error) {
 			return fail(err)
 		}
 	}
-	if _, err = db.Exec("UPDATE jobs SET state='unknown', detail='服务重启后需要人工核实；不会自动重发',updated_at=? WHERE state IN ('dispatched','running')", now()); err != nil {
+	if _, err = db.Exec("UPDATE jobs SET state='unknown', detail='服务重启后需要人工核实；不会自动重发',updated_at=? WHERE state IN ('dispatched','waiting','starting','running','stopping')", now()); err != nil {
 		return fail(err)
 	}
 	return &Store{db}, nil
