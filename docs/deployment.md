@@ -44,7 +44,7 @@ docker run -d --name maa-control-center --restart unless-stopped \
 1. 在新目录存放 Agent 二进制、`ca.pem` 和由示例填写的 `agent.private.json`。确认目录 ACL 仅管理员和运行用户可读。
 2. `maa_dirs` 填入实际已有安装；`allow_read_dirs` 只包含需要读取的基建目录。不要依据旧目录名推断程序版本。
 3. 配置 `server` 为实际 HTTPS 地址，`token` 与 NAS 配对一致；不要将 token 作为命令参数。
-4. 首先执行 `maa-agent-windows-amd64.exe --config-file agent.private.json --once`；服务返回 accepted 才算心跳已通。
+4. 首先执行 `maa-agent-windows-amd64.exe --config-file agent.private.json --once`；随后在网页确认 Agent 在线与最新心跳；无窗口版本不依赖控制台输出。
 5. 使用 `scripts/install-agent.ps1 -InstallDir <新目录>` 建立启动与当前用户登录任务。安装脚本拒绝覆盖同名任务。
 
 默认只读。显式启用 `allow_config_write` 可应用确认后的配置，启用 `allow_task_control` 可下发游戏任务；同时填写 `profile_roles`。任务控制和打开状态下的配置重载需要当前用户交互会话，使用 Limited / Interactive 登录任务，不使用 SYSTEM / Session 0。原有定时不会自动关闭。升级后先用「仅检查配置切换与 MAA 界面」确认链路，再启用真正的挂机计划。
