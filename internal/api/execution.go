@@ -489,9 +489,13 @@ func (s *Server) jobReceipt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var j Job
-	e := s.Store.DB.QueryRow("SELECT id,account_id,owner_id,state,type FROM jobs WHERE id=? AND agent_id=?", receipt.ID, s.cfg.AgentID).Scan(&j.ID, &j.AccountID, &j.OwnerID, &j.State, &j.Type)
+	e := s.Store.DB.QueryRow("SELECT id,account_id,owner_id,state,type,instance_id FROM jobs WHERE id=? AND agent_id=?", receipt.ID, s.cfg.AgentID).Scan(&j.ID, &j.AccountID, &j.OwnerID, &j.State, &j.Type, &j.InstanceID)
 	if e != nil {
 		problem(w, 404, "not_found", "任务不存在")
+		return
+	}
+	if c := receipt.Completion; c != nil && (c.InstanceID != j.InstanceID || j.Type == "check") {
+		problem(w, 422, "invalid_completion", "队列完成证据不属于此任务")
 		return
 	}
 	if j.State == "pending" || j.State == "cancelled" || j.State == "completed" || j.State == "completed_with_errors" || j.State == "failed" || j.State == "expired" {
@@ -525,6 +529,14 @@ func (s *Server) jobReceipt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if terminal && j.Type != "check" {
+		// The same exact GUI marker may reach heartbeat before or after this receipt.
+		// Claim it in this transaction so the generic watcher cannot notify twice.
+		if c := receipt.Completion; c != nil {
+			if _, e = tx.Exec("INSERT OR IGNORE INTO observed_completions(id,agent_id,instance_id,observed_at) VALUES(?,?,?,?)", c.ID, s.cfg.AgentID, c.InstanceID, c.ObservedAt); e != nil {
+				s.result(w, nil, e)
+				return
+			}
+		}
 		var name string
 		_ = tx.QueryRow("SELECT name FROM accounts WHERE id=?", j.AccountID).Scan(&name)
 		if e = notify.Enqueue(tx, cfg.Channels, notify.Facts{OwnerID: j.OwnerID, ID: "job/" + j.ID, Kind: "job", Account: name, State: receipt.State, Time: receipt.Time, Detail: receipt.Detail, Source: "Windows原生任务入口、对应配置档、队列日志与窗口状态"}); e != nil {

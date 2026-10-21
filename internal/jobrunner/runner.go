@@ -28,10 +28,11 @@ type Command struct {
 	Monitor    bool   `json:"monitor"`
 }
 type Receipt struct {
-	ID     string `json:"id"`
-	State  string `json:"state"`
-	Detail string `json:"detail"`
-	Time   string `json:"time"`
+	Completion *model.Completion `json:"completion,omitempty"`
+	ID         string            `json:"id"`
+	State      string            `json:"state"`
+	Detail     string            `json:"detail"`
+	Time       string            `json:"time"`
 }
 type Controller interface {
 	Probe(string) (desktop.Snapshot, error)
@@ -278,8 +279,10 @@ func (r *Runner) Step(c Command) Receipt {
 	if !s.Running {
 		markers := agent.Completions(root, c.InstanceID, rec.Started)
 		if len(markers) > 0 {
+			last := markers[len(markers)-1]
 			rec.Stage = "finished"
-			return save(markers[0].State, "本次队列完成日志已确认，随后MAA退出；游戏奖励以实际为准")
+			out.Completion = &last
+			return save(last.State, "本次队列完成日志已确认，随后MAA退出；游戏奖励以实际为准")
 		}
 	}
 	if !s.Running {
@@ -310,6 +313,7 @@ func (r *Runner) Step(c Command) Receipt {
 		if len(markers) > 0 {
 			last := markers[len(markers)-1]
 			rec.Stage = "finished"
+			out.Completion = &last
 			return save(last.State, "MAA 队列日志与空闲状态共同确认结束；奖励和资源消耗仍以游戏为准")
 		}
 		if now.Sub(rec.Started) > 2*time.Minute {
@@ -351,5 +355,11 @@ func (r Receipt) Valid() bool {
 		return false
 	}
 	_, e := time.Parse(time.RFC3339, r.Time)
+	if c := r.Completion; c != nil {
+		at, ce := time.Parse(time.RFC3339, c.ObservedAt)
+		if ce != nil || at.After(time.Now().Add(2*time.Minute)) || !idPattern.MatchString(c.ID) || !regexp.MustCompile(`^[a-f0-9]{16}$`).MatchString(c.InstanceID) || c.State != r.State || (r.State != "completed" && r.State != "completed_with_errors") {
+			return false
+		}
+	}
 	return e == nil && (terminal(r.State) || r.State == "waiting" || r.State == "starting" || r.State == "running" || r.State == "stopping")
 }

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"github.com/yumi233/maa-control-center/internal/assistant"
 	"github.com/yumi233/maa-control-center/internal/jobrunner"
 	"github.com/yumi233/maa-control-center/internal/model"
@@ -136,5 +137,56 @@ func TestCheckReceiptsNeverQueueNotifications(t *testing.T) {
 		if (kind == "check" && n != 0) || (kind == "daily" && n != 1) {
 			t.Fatal("notification policy", kind, n)
 		}
+	}
+}
+
+func TestManagedCompletionHeartbeatAndReceiptNotifyOnce(t *testing.T) {
+	for _, heartbeatFirst := range []bool{false, true} {
+		t.Run(fmt.Sprint(heartbeatFirst), func(t *testing.T) {
+			s, h, c, x := executionFixture(t)
+			if e := s.Integrations.Save(assistant.Settings{Channels: []assistant.Channel{{Kind: "telegram", Enabled: true, Token: "fixture-only-token", ChatID: "123"}}}); e != nil {
+				t.Fatal(e)
+			}
+			w := call(h, "POST", "/api/v1/jobs", `{"account_id":"primary","type":"daily"}`, c, x)
+			if w.Code != 202 {
+				t.Fatal(w.Body)
+			}
+			w = agentRequest(h, "GET", "/api/v1/agent/jobs/commands", nil)
+			var cmds []jobrunner.Command
+			json.Unmarshal(w.Body.Bytes(), &cmds)
+			if len(cmds) != 1 {
+				t.Fatal(w.Body)
+			}
+			marker := model.Completion{ID: rules.Hash([]byte("exact-fixture-marker")), InstanceID: cmds[0].InstanceID, State: "completed", ObservedAt: time.Now().UTC().Format(time.RFC3339), Source: "fixture"}
+			hb := model.Heartbeat{AgentID: "fixture-agent", Instances: []model.Instance{{ID: marker.InstanceID, Version: "6.20.0"}}, Completions: []model.Completion{marker}}
+			if heartbeatFirst {
+				if e := s.observedCompletions(hb); e != nil {
+					t.Fatal(e)
+				}
+			}
+			rec := jobrunner.Receipt{ID: cmds[0].ID, State: "completed", Time: marker.ObservedAt, Detail: "fixture", Completion: &marker}
+			wrong := marker
+			wrong.InstanceID = "fedcba9876543210"
+			rec.Completion = &wrong
+			if w = agentRequest(h, "POST", "/api/v1/agent/jobs/receipts", rec); w.Code != 422 {
+				t.Fatal("wrong instance evidence accepted")
+			}
+			rec.Completion = &marker
+			if w = agentRequest(h, "POST", "/api/v1/agent/jobs/receipts", rec); w.Code != 200 {
+				t.Fatal(w.Body)
+			}
+			if !heartbeatFirst {
+				if e := s.observedCompletions(hb); e != nil {
+					t.Fatal(e)
+				}
+			}
+			agentRequest(h, "POST", "/api/v1/agent/jobs/receipts", rec)
+			s.observedCompletions(hb)
+			var n int
+			s.Store.DB.QueryRow("SELECT count(*) FROM notification_outbox").Scan(&n)
+			if n != 1 {
+				t.Fatal("duplicate notifications", n)
+			}
+		})
 	}
 }

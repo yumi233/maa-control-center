@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"time"
+
+	"github.com/yumi233/maa-control-center/internal/executil"
 )
 
 type Snapshot struct {
@@ -70,6 +72,7 @@ func control(root, action string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
+	executil.HideConsole(cmd)
 	cmd.Env = append(os.Environ(), "MAACC_CONTROL_EXE="+filepath.Join(root, "MAA.exe"), "MAACC_CONTROL_ACTION="+action)
 	b, e := cmd.Output()
 	if e != nil {

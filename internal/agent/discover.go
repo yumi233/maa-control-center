@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yumi233/maa-control-center/internal/executil"
 	"github.com/yumi233/maa-control-center/internal/model"
 	"github.com/yumi233/maa-control-center/internal/rules"
 )
@@ -240,6 +241,7 @@ func Discover(root string, extraAllowed []string) model.Instance {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", `$v=(Get-Item -LiteralPath $env:MAACC_DISCOVERY_EXE).VersionInfo.ProductVersion; $running=@(Get-Process -Name MAA -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $env:MAACC_DISCOVERY_EXE }).Count -gt 0; @{version=$v;running=$running} | ConvertTo-Json -Compress`)
+		executil.HideConsole(cmd)
 		cmd.Env = append(os.Environ(), "MAACC_DISCOVERY_EXE="+filepath.Join(root, "MAA.exe"))
 		if b, err := cmd.Output(); err == nil {
 			var v struct {
