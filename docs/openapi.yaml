@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: MAA Control Center API
-  version: 0.4.2
+  version: 0.4.3
   description: Reviewed configuration, profile-scoped daily/weekly scheduling and serialized Windows execution. All dates use RFC3339 UTC. Accounts, plans, settings and notification records are user scoped; administrator-only endpoints reject members. See docs/agent-mode.md for operation scopes and setup.
 servers:
   - url: /
