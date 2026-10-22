@@ -1,0 +1,48 @@
+{
+  "auto_sign_enabled": {
+    "description": "自动签到开关",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后按北京时间执行；重启后扫描当日漏签。通知默认关闭。"
+  },
+  "show_player_name": {
+    "description": "显示玩家名称",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后，将在签到结果中默认显示森空岛昵称，否则显示QQ昵称"
+  },
+  "auto_sign_hour": {
+    "description": "自动签到时间（小时）",
+    "type": "int",
+    "default": 9,
+    "hint": "北京时间小时，默认 9；保留已有配置值。"
+  },
+  "auto_sign_delay": {
+    "description": "自动签到的延迟，防止风控",
+    "type": "int",
+    "default": 10,
+    "hint": "将在签到时进行向后随机延迟，0为不限制（随机范围 0 至 设定的秒数）"
+  },
+  "max_users": {
+    "description": "最大登录数量，防止风控",
+    "type": "int",
+    "default": 10,
+    "hint": "将限制登录账户的数量，0为不限制"
+  },
+  "auto_sign_minute": {
+    "description": "自动签到分钟",
+    "type": "int",
+    "default": 0
+  },
+  "binding_public_url": {
+    "description": "网页绑定站点（HTTPS）",
+    "type": "string",
+    "default": "https://maa.yumi233.cn"
+  },
+  "binding_port": {
+    "description": "容器内部绑定 API 端口",
+    "type": "int",
+    "default": 6190,
+    "hint": "不映射到公网，由 MAA 网站代理专用路径。"
+  }
+}

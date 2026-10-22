@@ -1,0 +1,6 @@
+httpx>=0.25.0
+pycryptodome>=3.19.0
+apscheduler>=3.10.0
+
+cryptography>=42
+aiohttp>=3.10

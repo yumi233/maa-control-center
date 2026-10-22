@@ -64,7 +64,7 @@ func (s *Server) sklandRoutes(m *http.ServeMux) {
 	}
 	for _, route := range []string{"POST /skland/api/session", "GET /skland/api/status", "POST /skland/api/credential", "POST /skland/api/commit", "POST /skland/api/sign", "POST /skland/api/cancel"} {
 		m.HandleFunc(route, func(w http.ResponseWriter, r *http.Request) {
-			r.Body = http.MaxBytesReader(w, r.Body, 8192)
+			r.Body = http.MaxBytesReader(w, r.Body, 131072)
 			if r.Method != "GET" && r.Header.Get("Origin") != s.cfg.PublicURL {
 				problem(w, 403, "origin_invalid", "请从本站绑定页面操作")
 				return

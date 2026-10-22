@@ -85,3 +85,26 @@ func TestSklandEntrypointDoesNotRedirectLoop(t *testing.T) {
 		}
 	}
 }
+
+func TestSklandProxyAcceptsCompleteJSONResponse(t *testing.T) {
+	body := `{"token":"` + strings.Repeat("x", 10000) + `"}`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, err := io.ReadAll(r.Body)
+		if err != nil || string(data) != body {
+			t.Error("complete response was truncated", err, len(data))
+		}
+		io.WriteString(w, `{"ok":true}`)
+	}))
+	defer upstream.Close()
+	t.Setenv("MAACC_SKLAND_UPSTREAM", upstream.URL)
+	s := &Server{cfg: Config{PublicURL: "https://maa.yumi233.cn"}}
+	mux := http.NewServeMux()
+	s.sklandRoutes(mux)
+	req := httptest.NewRequest("POST", "/skland/api/credential", strings.NewReader(body))
+	req.Header.Set("Origin", "https://maa.yumi233.cn")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatal(w.Code)
+	}
+}
