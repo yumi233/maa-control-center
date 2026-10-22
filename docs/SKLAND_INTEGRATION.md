@@ -64,7 +64,7 @@ MAACC_SKLAND_UPSTREAM=http://astrbot:6190
 
 ## AstrBot 端配套
 
-网站本身不保存森空岛凭证、不执行 QQ 身份确认。配套插件为改造后的 `astrbot_plugin_skland` v2.0.1；原作者 Azincc，保留原鉴权和游戏签到协议，新增服务层。
+网站本身不保存森空岛凭证、不执行 QQ 身份确认。配套源码在 [`integrations/astrbot_plugin_skland`](../integrations/astrbot_plugin_skland/README.md)，插件为改造后的 `astrbot_plugin_skland` v2.0.1；原作者 Azincc，保留原鉴权和游戏签到协议，新增服务层。
 
 - 插件代码：`/AstrBot/data/plugins/astrbot_plugin_skland/`。
 - 专用 API：容器内部 `0.0.0.0:6190`。
@@ -108,7 +108,7 @@ npm run build
 
 网站端完整实现随本集成提交纳入 Git。日常维护以当前仓库中的代码、README 和 AGENTS.md 为准，不依赖服务器本地源码目录或额外补丁文件。
 
-配套 AstrBot 插件单独部署，本仓库不包含用户数据库、主密钥、Token 或服务器私有配置。重新部署网站前，应确认插件 v2.0.1 的专用 API 仍可达。
+配套 AstrBot 插件源码随网站保存在 integrations 目录，但需单独部署；本仓库不包含用户数据库、主密钥、Token 或服务器私有配置。重新部署网站前，应确认插件 v2.0.1 的专用 API 仍可达。
 
 本集成尚未进入发布分支时，先合并集成提交，再发布后续版本。不要只复制本说明而遗漏上表列出的前后端代码及测试。
 
