@@ -1,5 +1,6 @@
 """Explicit, account-scoped MAA commands. No model or shell execution."""
 
+import asyncio
 import json
 import os
 import re
@@ -14,6 +15,7 @@ from astrbot.api.star import Context, Star
 
 ACTIONS = {"帮助": "help", "help": "help", "状态": "status", "开始": "start",
            "启动": "start", "停止": "stop", "汇报": "report", "今日": "today", "计划": "schedules"}
+MAX_RESPONSE_BYTES = 65536
 
 
 def select_route(config, umo, action, target="", job_id=""):
@@ -42,10 +44,20 @@ async def request_command(config, payload, route):
         async with session.post(base + "/api/v1/bot/commands", json=payload,
                                 headers={"Authorization": "Bearer " + route["token"]},
                                 ssl=tls, allow_redirects=False) as response:
-            raw = await response.content.read(65537)
-            if len(raw) > 65536:
+            # read(n) returns any available chunk, not necessarily the whole body.
+            # Wait for EOF while keeping decompressed response memory bounded.
+            try:
+                raw = await response.content.readexactly(MAX_RESPONSE_BYTES + 1)
+            except asyncio.IncompleteReadError as error:
+                raw = error.partial
+            if len(raw) > MAX_RESPONSE_BYTES:
                 raise ValueError("响应过大，结果未确认；请查看网页状态。")
-            data = json.loads(raw)
+            try:
+                data = json.loads(raw)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                raise ValueError("群控响应格式无效，结果未确认；请先用 /maa 状态 核实，勿连续重发开始或停止指令。") from None
+            if not isinstance(data, dict) or not isinstance(data.get("message"), str):
+                raise ValueError("群控响应缺少有效消息，结果未确认；请查看网页状态。")
             if response.status != 200:
                 return str(data.get("message", "请求被拒绝，请查看网页状态。"))[:600]
             return str(data.get("message", "请求未确认，请查看网页状态。"))[:4000]

@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 import json
 import os
@@ -6,7 +7,7 @@ import sys
 import tempfile
 import types
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 # The command transport is tested independently of the AstrBot daemon. Runtime
 # loading is verified separately against the installed AstrBot package.
@@ -43,6 +44,17 @@ class Event:
         return text
 
 
+class AsyncContext:
+    def __init__(self, value):
+        self.value = value
+
+    async def __aenter__(self):
+        return self.value
+
+    async def __aexit__(self, *_):
+        return False
+
+
 class PluginTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -54,6 +66,49 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.env = patch.dict(os.environ, {"MAACC_BOT_CONFIG": str(path)})
         self.env.start()
         self.addCleanup(self.env.stop)
+
+    async def transport_reply(self, body, split_at=None, status=200):
+        # StreamReader.read(n) may return only the first available network chunk.
+        # Reproduce that boundary without sockets or production requests.
+        stream = asyncio.StreamReader()
+        stream.feed_data(body if split_at is None else body[:split_at])
+
+        async def finish():
+            await asyncio.sleep(0)
+            if split_at is not None:
+                stream.feed_data(body[split_at:])
+            stream.feed_eof()
+
+        feeder = asyncio.create_task(finish())
+        response = types.SimpleNamespace(content=stream, status=status)
+        session = types.SimpleNamespace(post=Mock(return_value=AsyncContext(response)))
+        try:
+            with patch.object(plugin.aiohttp, "ClientSession", return_value=AsyncContext(session)):
+                return await plugin.request_command(self.config, {}, self.config["routes"][0])
+        finally:
+            await feeder
+            self.assertEqual(session.post.call_count, 1)
+
+    async def test_fragmented_response_is_read_to_eof(self):
+        message = "今日汇报：已完成，最近实际理智 6/205。" * 50
+        body = json.dumps({"message": message}, ensure_ascii=False).encode("utf-8")
+        for split in (11, 12, 13, len(body) // 2):
+            with self.subTest(split=split):
+                self.assertEqual(await self.transport_reply(body, split), message)
+
+    async def test_invalid_response_is_safe_and_not_retried(self):
+        for body in (b'{"message":"truncated', b'[]', b'{"message":42}', b'\xff', b'<html>Bad gateway</html>'):
+            with self.subTest(body=body):
+                with self.assertRaisesRegex(ValueError, "响应.*未确认"):
+                    await self.transport_reply(body, 11)
+
+    async def test_response_size_boundary_and_http_error(self):
+        exact = b'{"message":"' + b'x' * (65536 - 14) + b'"}'
+        self.assertEqual(len(exact), 65536)
+        self.assertEqual(await self.transport_reply(exact, 11), "x" * 4000)
+        with self.assertRaisesRegex(ValueError, "响应过大"):
+            await self.transport_reply(exact + b' ', 11)
+        self.assertEqual(await self.transport_reply(b'{"message":"denied"}', 11, 403), "denied")
 
     async def test_closed_command_and_platform_identity(self):
         event = Event()
