@@ -99,15 +99,22 @@ func (s *Server) integrationRoutes(m *http.ServeMux) {
 			problem(w, 503, "settings_unavailable", err.Error())
 			return
 		}
-		enabled := false
-		for _, c := range cfg.Channels {
-			enabled = enabled || c.Enabled
+		kind := r.URL.Query().Get("channel")
+		if kind != "" && kind != "telegram" && kind != "qq" && kind != "astrbot" {
+			problem(w, 422, "channel_invalid", "通知渠道无效")
+			return
 		}
-		if !enabled {
+		channels := []assistant.Channel{}
+		for _, c := range cfg.Channels {
+			if c.Enabled && (kind == "" || kind == c.Kind) {
+				channels = append(channels, c)
+			}
+		}
+		if len(channels) == 0 {
 			problem(w, 422, "channel_disabled", "请先启用并保存至少一个通知渠道")
 			return
 		}
-		e := s.Notifications.Queue(notify.Facts{OwnerID: s.currentUser(r).ID, ID: id, Kind: "test", Account: "管理中心", State: "test", Time: time.Now().UTC().Format(time.RFC3339), Detail: "这是一条用户主动发送的连接测试", Source: "通知测试按钮"})
+		e := notify.Enqueue(s.Store.DB, channels, notify.Facts{OwnerID: s.currentUser(r).ID, ID: id, Kind: "test", Account: "管理中心", State: "test", Time: time.Now().UTC().Format(time.RFC3339), Detail: "这是一条用户主动发送的连接测试", Source: "通知测试按钮"})
 		if e != nil {
 			problem(w, 422, "queue_failed", e.Error())
 			return

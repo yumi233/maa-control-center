@@ -20,6 +20,6 @@ export function makeDemo(): Overview {
     agents: [{agent_id: 'demo-agent', hostname: 'WINDOWS / DEMO', os: 'windows', version: '演示', last_seen: ago(0), online: true, instance: inst}],
     jobs: [{id: 'demo-job-001', account_id: 'demo-primary', type: '库存保持', state: 'running', progress: 64, created_at: ago(18)}, {id: 'demo-job-002', account_id: 'demo-secondary', type: '基建换班', state: 'pending', progress: 0, created_at: ago(4)}],
     events: [{id: 4, time: ago(1), level: 'info', account_id: 'demo-primary', message: '[演示] 理智作战完成，继续补充目标库存'}, {id: 3, time: ago(3), level: 'info', account_id: 'demo-primary', message: '[演示] 库存识别完成，发现 4 项材料缺口'}, {id: 2, time: ago(4), level: 'info', account_id: 'demo-secondary', message: '[演示] 基建换班任务已加入队列'}, {id: 1, time: ago(18), level: 'info', account_id: '', message: '[演示] Windows Agent 已连接'}],
-    server_time: new Date(now).toISOString(), mode: 'demo', version: '0.4.1',
+    server_time: new Date(now).toISOString(), mode: 'demo', version: '0.4.2',
   }
 }

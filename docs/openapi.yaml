@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: MAA Control Center API
-  version: 0.4.1
+  version: 0.4.2
   description: Reviewed configuration, profile-scoped daily/weekly scheduling and serialized Windows execution. All dates use RFC3339 UTC. Accounts, plans, settings and notification records are user scoped; administrator-only endpoints reject members. See docs/agent-mode.md for operation scopes and setup.
 servers:
   - url: /
@@ -56,7 +56,7 @@ paths:
         '200': {description: 'provider, channels[], creative; no API or channel secrets'}
     put:
       security: [{session: [], csrf: []}]
-      summary: Save provider and Telegram/QQ settings; blank key preserves, clear_key removes
+      summary: Save provider and Telegram/OneBot/AstrBot settings; blank key preserves, clear_key removes
       requestBody:
         required: true
         content:
@@ -75,7 +75,12 @@ paths:
   /api/v1/integrations/notifications/test:
     post:
       security: [{session: [], csrf: []}]
-      summary: Queue a clearly marked test for enabled saved channels
+      summary: Queue a clearly marked test without calling a model; optionally select one saved channel
+      parameters:
+        - in: query
+          name: channel
+          schema: {type: string, enum: [telegram, qq, astrbot]}
+          description: Omit to test all enabled channels; specify to test only this enabled channel.
       responses:
         '202': {description: Test queued}
         '422': {$ref: '#/components/responses/Error'}

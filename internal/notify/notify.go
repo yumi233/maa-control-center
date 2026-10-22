@@ -89,7 +89,7 @@ var intros = map[string]string{"warm": "来看看这次的进展吧。", "cheerf
 
 func (s *Service) Message(ctx context.Context, cfg assistant.Settings, f Facts) string {
 	intro := ""
-	if cfg.Creative && cfg.Provider.APIKey != "" {
+	if f.Kind != "test" && cfg.Creative && cfg.Provider.APIKey != "" {
 		var v struct {
 			Tone string `json:"tone"`
 		}
@@ -134,6 +134,18 @@ func (s *Service) Send(ctx context.Context, c assistant.Channel, text string) (s
 		}
 		endpoint = strings.TrimRight(c.BaseURL, "/") + "/" + path
 		payload = map[string]any{key: c.TargetID, "message": []any{map[string]any{"type": "text", "data": map[string]string{"text": text}}}, "auto_escape": true}
+	} else if c.Kind == "astrbot" {
+		if e := assistant.ValidateURL(c.BaseURL, c.AllowPrivateHTTP); e != nil {
+			return "failed", e
+		}
+		if e := assistant.ValidateUMO(c.TargetID); e != nil {
+			return "failed", e
+		}
+		if c.Token == "" || strings.ContainsAny(c.Token, "\r\n") {
+			return "failed", fmt.Errorf("请填写 AstrBot API Key")
+		}
+		endpoint = strings.TrimRight(c.BaseURL, "/") + "/api/v1/im/message"
+		payload = map[string]string{"umo": c.TargetID, "message": text}
 	} else {
 		return "failed", fmt.Errorf("未知通知渠道")
 	}
@@ -146,12 +158,12 @@ func (s *Service) Send(ctx context.Context, c assistant.Channel, text string) (s
 		return "failed", fmt.Errorf("通知地址无效")
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if c.Kind == "qq" && c.Token != "" {
+	if (c.Kind == "qq" || c.Kind == "astrbot") && c.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
 	}
 	h := s.HTTP
 	if h == nil {
-		h = assistant.NetworkClient(15*time.Second, c.Kind == "qq" && c.AllowPrivateHTTP && !c.PublicOnly)
+		h = assistant.NetworkClient(15*time.Second, (c.Kind == "qq" || c.Kind == "astrbot") && c.AllowPrivateHTTP && !c.PublicOnly)
 	}
 	var wrote atomic.Bool
 	req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{WroteHeaders: func() { wrote.Store(true) }}))
@@ -192,6 +204,16 @@ func (s *Service) Send(ctx context.Context, c assistant.Channel, text string) (s
 	}
 	if json.Unmarshal(raw, &result) != nil {
 		return "unknown", fmt.Errorf("通知响应无效，送达待核实")
+	}
+	if c.Kind == "astrbot" {
+		switch result.Status {
+		case "ok":
+			return "sent", nil
+		case "error":
+			return "failed", fmt.Errorf("AstrBot 拒绝发送，请检查 im 权限、机器人在线状态和 UMO；QQ 官方机器人也可能限制主动消息")
+		default:
+			return "unknown", fmt.Errorf("AstrBot 响应未确认，送达待核实")
+		}
 	}
 	if (c.Kind == "telegram" && result.OK) || (c.Kind == "qq" && result.Status == "ok" && result.Retcode == 0) {
 		return "sent", nil

@@ -103,7 +103,7 @@ func main() {
 		defer cancel()
 		_ = srv.Shutdown(ctx)
 	}()
-	log.Printf("MAA Control Center 0.4.1 | reviewed configuration | listen=%s", *addr)
+	log.Printf("MAA Control Center 0.4.2 | reviewed configuration | listen=%s", *addr)
 	if cert != "" {
 		err = srv.ListenAndServeTLS(cert, key)
 	} else {

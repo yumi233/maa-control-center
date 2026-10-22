@@ -162,3 +162,73 @@ func TestTelegramRejectionsAndPreSendFailures(t *testing.T) {
 		t.Fatalf("pre-send failure mistaken as delivered/unknown: %s %v", state, e)
 	}
 }
+
+func TestAstrBotSendContractAndAmbiguousResponses(t *testing.T) {
+	for _, tc := range []struct {
+		body, state string
+		code        int
+	}{
+		{`{"status":"ok","data":{}}`, "sent", 200},
+		{`{"status":"error","message":"private server detail"}`, "failed", 200},
+		{`{"ok":true}`, "unknown", 200},
+		{`not json`, "unknown", 200},
+		{`{"status":"ok"}`, "unknown", 503},
+		{`private server detail`, "failed", 403},
+	} {
+		t.Run(tc.state+tc.body, func(t *testing.T) {
+			receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != "POST" || r.URL.Path != "/api/v1/im/message" || r.Header.Get("Authorization") != "Bearer abk_fixture_secret" {
+					t.Error("wrong AstrBot request")
+				}
+				var body map[string]string
+				if json.NewDecoder(r.Body).Decode(&body) != nil || body["umo"] != "fixture:FriendMessage:session" || body["message"] != "plain [CQ:at,qq=1] text" {
+					t.Error("wrong message or UMO")
+				}
+				w.WriteHeader(tc.code)
+				w.Write([]byte(tc.body))
+			}))
+			defer receiver.Close()
+			s := Service{HTTP: receiver.Client()}
+			state, err := s.Send(context.Background(), assistant.Channel{Kind: "astrbot", Token: "abk_fixture_secret", BaseURL: receiver.URL, AllowPrivateHTTP: true, TargetID: "fixture:FriendMessage:session"}, "plain [CQ:at,qq=1] text")
+			if state != tc.state || (state == "sent") != (err == nil) {
+				t.Fatalf("%s %v", state, err)
+			}
+			if err != nil && (strings.Contains(err.Error(), "private server detail") || strings.Contains(err.Error(), "fixture_secret")) {
+				t.Fatal("secret or private response leaked")
+			}
+		})
+	}
+}
+
+func TestAstrBotUnknownIsNotRetriedAndTestDoesNotCallModel(t *testing.T) {
+	st, err := storage.Open(filepath.Join(t.TempDir(), "notify.db"), "fixture-password-12345", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.DB.Close()
+	v, _ := vault.New(make([]byte, 32))
+	settings := assistant.SettingsStore{DB: st.DB, Vault: v}
+	var hits atomic.Int32
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Write([]byte(`{"status":"indeterminate"}`))
+	}))
+	defer receiver.Close()
+	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { t.Error("notification test called a model") }))
+	defer model.Close()
+	cfg := assistant.Settings{Creative: true, Provider: assistant.Provider{BaseURL: model.URL, Model: "fixture", APIKey: "fixture", AllowPrivateHTTP: true}, Channels: []assistant.Channel{{Kind: "astrbot", Enabled: true, Token: "abk_fixture", BaseURL: receiver.URL, AllowPrivateHTTP: true, TargetID: "fixture:FriendMessage:session"}}}
+	if err = settings.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	s := Service{Settings: settings, HTTP: receiver.Client(), API: assistant.ClientAPI{HTTP: model.Client()}}
+	if err = s.Queue(Facts{ID: "astrbot-test", Kind: "test", State: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	s.Drain(context.Background())
+	s.Drain(context.Background())
+	var state string
+	st.DB.QueryRow("SELECT state FROM notification_outbox WHERE channel='astrbot'").Scan(&state)
+	if hits.Load() != 1 || state != "unknown" {
+		t.Fatal("ambiguous AstrBot delivery replayed")
+	}
+}

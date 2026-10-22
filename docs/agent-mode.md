@@ -56,6 +56,14 @@
 
 服务端使用 [Telegram Bot API sendMessage](https://core.telegram.org/bots/api#sendmessage)，固定请求官方 HTTPS 地址；不使用 Markdown/HTML 解析用户文本。NAS 必须能连接 Telegram 网络。密钥不进入消息、网页读取响应或普通错误日志。
 
+## QQ 官方机器人 / AstrBot
+
+通知支持通过 [AstrBot HTTP API](https://docs.astrbot.app/dev/openapi.html) 直连已经接入的 QQ 官方机器人。在 AstrBot 设置中创建仅有 `im` 权限的 API Key，将 AstrBot 基址（例如 `http://192.168.1.2:6185`）、Key 和目标会话完整 UMO 填入「我的接入与通知」。UMO 来自目标机器人私聊或群聊中的 `/sid`，格式为 `平台:FriendMessage:会话标识` 或 `平台:GroupMessage:会话标识`。UID 用于 AstrBot 管理员配置，通知路由使用 UMO。
+
+保存并启用后，使用该渠道的单独测试按钮核验发送。请求为 `POST /api/v1/im/message`，Bearer 认证，正文为 `umo` 和纯文本 `message`。通知测试不调用模型；实际任务通知继续沿用已保存的表达偏好。接入不修改 AstrBot 的管理员、白名单、现有机器人或模型配置。
+
+旧版本升级时新增的 AstrBot 渠道默认禁用，原有 TG、OneBot 和密钥保持原值。内网地址仍仅允许管理员显式授权。`sent` 表示 AstrBot 接口确认处理，不代表用户已经阅读；QQ 官方平台的主动推送额度、时段和权限限制需结合实际回执核验。无法确认送达的结果标为 `unknown`，不会自动重发。
+
 ## QQ / OneBot / NapCat
 
 使用自己已有的 OneBot v11 HTTP 服务，在网页填写其地址、Access Token、私聊或群聊与目标号码。明文 HTTP 仅允许用户显式勾选后的内网 IP；公网服务要求 HTTPS。随后保存并测试。

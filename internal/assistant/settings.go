@@ -7,6 +7,7 @@ import (
 	"github.com/yumi233/maa-control-center/internal/vault"
 	"strings"
 	"time"
+	"unicode"
 )
 
 type Channel struct {
@@ -41,7 +42,7 @@ func (s SettingsStore) key() string {
 	return s.UserID
 }
 func (s SettingsStore) Load() (Settings, error) {
-	v := Settings{Channels: []Channel{{Kind: "telegram", TargetType: "private"}, {Kind: "qq", TargetType: "private"}}}
+	v := Settings{Channels: []Channel{{Kind: "telegram", TargetType: "private"}, {Kind: "qq", TargetType: "private"}, {Kind: "astrbot"}}}
 	var cipher string
 	e := s.DB.QueryRow("SELECT encrypted FROM integration_settings WHERE id=?", s.key()).Scan(&cipher)
 	if e == sql.ErrNoRows {
@@ -58,6 +59,16 @@ func (s SettingsStore) Load() (Settings, error) {
 		return v, fmt.Errorf("无法解密接入设置，请恢复配套密钥文件")
 	}
 	e = json.Unmarshal(b, &v)
+	if e != nil {
+		return v, e
+	}
+	found := false
+	for _, c := range v.Channels {
+		found = found || c.Kind == "astrbot"
+	}
+	if !found {
+		v.Channels = append(v.Channels, Channel{Kind: "astrbot"})
+	}
 	if s.restricted() {
 		v.Provider.PublicOnly = true
 		for i := range v.Channels {
@@ -123,8 +134,8 @@ func (s SettingsStore) Save(v Settings) error {
 			return e
 		}
 	}
-	if len(v.Channels) > 2 {
-		return fmt.Errorf("仅支持 Telegram 和 QQ 两种渠道")
+	if len(v.Channels) > 3 {
+		return fmt.Errorf("仅支持 Telegram、OneBot 和 AstrBot 三种接入")
 	}
 	seen := map[string]bool{}
 	for i := range v.Channels {
@@ -132,7 +143,8 @@ func (s SettingsStore) Save(v Settings) error {
 		c.Token = strings.TrimSpace(c.Token)
 		c.ChatID = strings.TrimSpace(c.ChatID)
 		c.TargetID = strings.TrimSpace(c.TargetID)
-		if (c.Kind != "telegram" && c.Kind != "qq") || seen[c.Kind] {
+		c.BaseURL = strings.TrimSpace(c.BaseURL)
+		if (c.Kind != "telegram" && c.Kind != "qq" && c.Kind != "astrbot") || seen[c.Kind] {
 			return fmt.Errorf("通知渠道无效或重复")
 		}
 		seen[c.Kind] = true
@@ -155,6 +167,16 @@ func (s SettingsStore) Save(v Settings) error {
 			if c.Kind == "telegram" {
 				if c.Token == "" || c.ChatID == "" || len(c.ChatID) > 128 {
 					return fmt.Errorf("请填写 Telegram Bot Token 与 Chat ID")
+				}
+			} else if c.Kind == "astrbot" {
+				if c.Token == "" {
+					return fmt.Errorf("请填写具有 im 权限的 AstrBot API Key")
+				}
+				if e = ValidateUMO(c.TargetID); e != nil {
+					return e
+				}
+				if e = ValidateURL(c.BaseURL, c.AllowPrivateHTTP); e != nil {
+					return e
 				}
 			} else {
 				if c.TargetType != "private" && c.TargetType != "group" {
@@ -179,4 +201,15 @@ func (s SettingsStore) Save(v Settings) error {
 	}
 	_, e = s.DB.Exec("INSERT INTO integration_settings(id,encrypted,updated_at) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET encrypted=excluded.encrypted,updated_at=excluded.updated_at", s.key(), encrypted, time.Now().UTC().Format(time.RFC3339))
 	return e
+}
+
+// ValidateUMO accepts an AstrBot private or group session, never a raw QQ number.
+func ValidateUMO(umo string) error {
+	parts := strings.SplitN(umo, ":", 3)
+	if len(umo) > 1024 || len(parts) != 3 || parts[0] == "" || parts[2] == "" ||
+		(parts[1] != "FriendMessage" && parts[1] != "GroupMessage") ||
+		strings.IndexFunc(umo, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
+		return fmt.Errorf("请填写 /sid 返回的完整 AstrBot UMO（平台:消息类型:会话 ID）")
+	}
+	return nil
 }

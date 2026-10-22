@@ -13,6 +13,39 @@ import (
 	"time"
 )
 
+func TestNotificationTestSelectsOnlyRequestedChannel(t *testing.T) {
+	s, h := testServer(t)
+	cookie, csrf := loginFixture(t, h)
+	cfg := assistant.Settings{Channels: []assistant.Channel{
+		{Kind: "telegram", Enabled: true, Token: "123:fixture", ChatID: "1"},
+		{Kind: "astrbot", Enabled: true, Token: "abk_fixture", BaseURL: "https://astrbot.example.test", TargetID: "fixture:FriendMessage:session"},
+	}}
+	if err := s.Integrations.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	w := call(h, "POST", "/api/v1/integrations/notifications/test?channel=astrbot", "{}", cookie, csrf)
+	if w.Code != 202 {
+		t.Fatalf("queue %d %s", w.Code, w.Body)
+	}
+	var total, selected int
+	s.Store.DB.QueryRow("SELECT count(*) FROM notification_outbox").Scan(&total)
+	s.Store.DB.QueryRow("SELECT count(*) FROM notification_outbox WHERE channel='astrbot' AND owner_id='admin'").Scan(&selected)
+	if total != 1 || selected != 1 {
+		t.Fatal("test leaked into another channel or owner")
+	}
+	for _, kind := range []string{"invalid", "qq"} {
+		w = call(h, "POST", "/api/v1/integrations/notifications/test?channel="+kind, "{}", cookie, csrf)
+		if w.Code != 422 {
+			t.Fatal("invalid or disabled test accepted")
+		}
+	}
+	_, ac, ax := createMember(t, h, cookie, csrf, "astrbot-member")
+	w = call(h, "PUT", "/api/v1/integrations", `{"channels":[{"kind":"astrbot","enabled":true,"token":"abk_fixture","base_url":"http://127.0.0.1:6185","target_id":"fixture:FriendMessage:session","allow_private_http":true}]}`, ac, ax)
+	if w.Code != 422 {
+		t.Fatal("member enabled private AstrBot requests")
+	}
+}
+
 func TestAgentProposalReviewDispatchReceiptRollback(t *testing.T) {
 	s, h := testServer(t)
 	cookie, csrf := loginFixture(t, h)
