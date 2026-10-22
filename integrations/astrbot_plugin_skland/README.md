@@ -1,4 +1,4 @@
-# AstrBot 森空岛群聊网页认证插件 v2.0.1
+# AstrBot 森空岛群聊网页认证插件 v2.0.2
 
 基于 [Azincc/astrbot_plugin_skland](https://github.com/Azincc/astrbot_plugin_skland) v1.4.0 改造，保留上游森空岛 API 与游戏签到实现及作者署名。与网站公共 `/skland` 页面配套，部署说明见 [网站集成文档](../../docs/SKLAND_INTEGRATION.md)。
 
@@ -19,6 +19,13 @@
 - 使用 `content=` 发送已签名 JSON 时显式补 `Content-Type: application/json`，修复正确 Token 被当作空参数的问题。
 - 完整 JSON 自动提取 `content` / `token`，忽略无关字段，拒绝把 cred 配套签名密钥当作通行证 Token。
 - 请求体上限与网站一致为 128 KiB；认证错误只输出阶段、状态码和排查编号，不泄露凭证或上游完整响应。
+
+## v2.0.2 修复
+
+- 签到前用只读接口核实今日状态，已签到时修正本地记录，不重复提交。
+- 写入超时或响应解析异常后先查询真实结果；无法核实时保留待核实状态。
+- 历史未确认记录即使已达到重试上限，仍可核实为已签到；提示注明具体游戏并附脱敏排查编号。
+- 保留账号绑定、凭证、自动签到总开关与通知设置；GET 核实不重新发放或推算奖励。
 
 ## 验证
 

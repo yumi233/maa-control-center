@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse
+from urllib.parse import urlencode
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -442,6 +444,43 @@ class SklandAPI:
         return headers
 
     # ==================== Binding & Sign-In ====================
+
+    async def get_attendance_status(self, cred: Credential, binding: UserBinding, role=None) -> bool | None:
+        """Read today's server record without submitting attendance or guessing."""
+        did = await self.get_device_id()
+        if role is None:
+            url = "https://zonai.skland.com/api/v1/game/attendance?" + urlencode({"gameId": binding.game_id, "uid": binding.uid})
+        else:
+            url = "https://zonai.skland.com/web/v1/game/endfield/attendance"
+        headers = self._get_signed_headers(url, "GET", None, cred, did)
+        if role is not None:
+            headers.update({"sk-game-role": f"3_{role['roleId']}_{role['serverId']}",
+                            "referer": "https://game.skland.com/", "origin": "https://game.skland.com/"})
+        response = await self._request("GET", url, headers=headers)
+        data = response.get("data")
+        if response.get("code") != 0 or not isinstance(data, dict):
+            return None
+        if role is not None:
+            return data.get("hasToday") if isinstance(data.get("hasToday"), bool) else None
+        if not isinstance(data.get("records"), list):
+            return None
+        try:
+            def day(ts):
+                value = int(ts)
+                if value <= 0 or isinstance(ts, bool):
+                    raise ValueError()
+                if value > 100_000_000_000:
+                    value //= 1000
+                return datetime.fromtimestamp(value, ZoneInfo("Asia/Shanghai")).date()
+            today = day(data["currentTs"])
+            if today != datetime.now(ZoneInfo("Asia/Shanghai")).date():
+                return None
+            dates = [day(record["ts"]) for record in data["records"]]
+            if any(date > today for date in dates):
+                return None
+            return today in dates
+        except (KeyError, TypeError, ValueError, OverflowError, OSError):
+            return None
 
     async def get_binding_list(self, cred: Credential) -> list[UserBinding]:
         """Get user's game bindings"""

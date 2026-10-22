@@ -28,7 +28,7 @@ class Event:
     def get_group_id(self): return self.group
 
 class API:
-    def __init__(self): self.calls = 0; self.enter = None; self.release = None; self.fail = False
+    def __init__(self): self.calls = 0; self.enter = None; self.release = None; self.fail = False; self.signed = False
     async def get_authorization(self, token):
         self.last_token = token
         if self.enter:
@@ -42,6 +42,7 @@ class API:
     async def sign_arknights(self, cred, binding):
         self.calls += 1
         return SimpleNamespace(success=True,error='',game='明日方舟',nickname='tester',awards=[])
+    async def get_attendance_status(self, cred, binding, role=None): return self.signed
     def _is_signed_today(self, result): return False
 
 class SecurityTests(unittest.IsolatedAsyncioTestCase):
@@ -160,6 +161,53 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls.count('a'),1)
         self.assertEqual(calls.count('b'),2)
 
+    async def test_upstream_already_signed_never_submits_attendance(self):
+        await self.bound();uid=identity(self.event);self.api.signed=True
+        rows=await self.service.sign(uid)
+        self.assertEqual(self.api.calls,0)
+        self.assertEqual(rows[0]['state'],'already')
+        self.assertIn('明日方舟',rows[0]['message'])
+
+    async def test_unknown_record_reconciles_even_when_retries_exhausted(self):
+        await self.bound();uid=identity(self.event);self.api.signed=True
+        self.store.record(uid,'arknights:1:a',now().date().isoformat(),'unknown','old',4,time.time()+3600)
+        rows=await self.service.sign(uid)
+        self.assertEqual(self.api.calls,0)
+        self.assertEqual(rows[0]['state'],'already')
+        self.assertEqual(rows[0]['attempts'],4)
+
+    async def test_unreadable_status_never_submits_attendance(self):
+        await self.bound();uid=identity(self.event);self.api.signed=None
+        rows=await self.service.sign(uid)
+        self.assertEqual(self.api.calls,0)
+        self.assertEqual(rows[0]['state'],'unknown')
+        self.assertIn('未重复提交',rows[0]['message'])
+
+    async def test_write_exception_reconciles_success_without_second_write(self):
+        await self.bound();uid=identity(self.event)
+        async def sign(cred,binding):
+            self.api.calls+=1;self.api.signed=True
+            raise RuntimeError('PRIVATE_UPSTREAM_VALUE')
+        self.api.sign_arknights=sign
+        with self.assertLogs('skland_test.service',level='WARNING') as logs:
+            rows=await self.service.sign(uid)
+        self.assertEqual(self.api.calls,1)
+        self.assertEqual(rows[0]['state'],'already')
+        self.assertNotIn('PRIVATE_UPSTREAM_VALUE',json.dumps(rows)+' '.join(logs.output))
+
+    async def test_unconfirmed_write_stays_unknown_and_does_not_retry(self):
+        await self.bound();uid=identity(self.event)
+        async def sign(cred,binding):
+            self.api.calls+=1
+            raise RuntimeError('PRIVATE_UPSTREAM_VALUE')
+        self.api.sign_arknights=sign
+        with self.assertLogs('skland_test.service',level='WARNING') as logs:
+            rows=await self.service.sign(uid)
+        self.assertEqual(self.api.calls,1)
+        self.assertEqual(rows[0]['state'],'unknown')
+        self.assertIn('编号',rows[0]['message'])
+        self.assertNotIn('PRIVATE_UPSTREAM_VALUE',json.dumps(rows)+' '.join(logs.output))
+
     async def test_failed_commit_transaction_preserves_binding_and_session(self):
         cookie=await self.bound();uid=identity(self.event);version,data=self.store.account(uid)
         def fail(): raise RuntimeError('injected commit failure')
@@ -257,6 +305,49 @@ class CredentialParsingTests(unittest.TestCase):
             self.assertNotIn('PRIVATE_VALUE',str(ctx.exception))
 
 class ProtocolTests(unittest.IsolatedAsyncioTestCase):
+    async def test_arknights_status_uses_today_records_and_only_get(self):
+        import httpx
+        from datetime import datetime,timedelta
+        from zoneinfo import ZoneInfo
+        from skland_test.skland_api import SklandAPI,Credential
+        api=SklandAPI();api._did='test-device'
+        ts=int(time.time());midnight=int(datetime.now(ZoneInfo('Asia/Shanghai')).replace(hour=0,minute=0,second=0,microsecond=0).timestamp())
+        data={'currentTs':str(ts),'records':[{'ts':str(midnight)}]}
+        def handle(request):
+            self.assertEqual(request.method,'GET')
+            self.assertEqual(request.url.path,'/api/v1/game/attendance')
+            self.assertEqual(request.url.params['uid'],'role')
+            return httpx.Response(200,json={'code':0,'data':data})
+        api._client=httpx.AsyncClient(transport=httpx.MockTransport(handle))
+        binding=SimpleNamespace(game_id=1,uid='role')
+        try:
+            self.assertTrue(await api.get_attendance_status(Credential('sign-key','cred'),binding))
+            data['records']=[{'ts':str(midnight-86400)}]
+            self.assertIs(await api.get_attendance_status(Credential('sign-key','cred'),binding),False)
+            data['currentTs']=str(ts-86400)
+            self.assertIsNone(await api.get_attendance_status(Credential('sign-key','cred'),binding))
+            data['currentTs']=str(ts);data['records']=[{}]
+            self.assertIsNone(await api.get_attendance_status(Credential('sign-key','cred'),binding))
+        finally:await api.close()
+
+    async def test_endfield_status_requires_explicit_bool_and_role_header(self):
+        import httpx
+        from skland_test.skland_api import SklandAPI,Credential
+        api=SklandAPI();api._did='test-device';data={'hasToday':True}
+        def handle(request):
+            self.assertEqual(request.method,'GET')
+            self.assertEqual(request.url.path,'/web/v1/game/endfield/attendance')
+            self.assertEqual(request.headers['sk-game-role'],'3_role_server')
+            return httpx.Response(200,json={'code':0,'data':data})
+        api._client=httpx.AsyncClient(transport=httpx.MockTransport(handle))
+        try:
+            self.assertTrue(await api.get_attendance_status(Credential('sign-key','cred'),SimpleNamespace(),{'roleId':'role','serverId':'server'}))
+            data['hasToday']=False
+            self.assertIs(await api.get_attendance_status(Credential('sign-key','cred'),SimpleNamespace(),{'roleId':'role','serverId':'server'}),False)
+            data['hasToday']='true'
+            self.assertIsNone(await api.get_attendance_status(Credential('sign-key','cred'),SimpleNamespace(),{'roleId':'role','serverId':'server'}))
+        finally:await api.close()
+
     async def test_unrelated_already_message_is_not_success(self):
         from skland_test.skland_api import SklandAPI
         api=SklandAPI()

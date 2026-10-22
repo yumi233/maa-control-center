@@ -13,7 +13,7 @@ from .service import Service, identity, now, DONE
 from .web import BindingWeb
 
 
-@register('astrbot_plugin_skland', 'Azincc / yumi', '森空岛群聊网页认证与可靠签到', '2.0.1')
+@register('astrbot_plugin_skland', 'Azincc / yumi', '森空岛群聊网页认证与可靠签到', '2.0.2')
 class SklandPlugin(Star):
     def __init__(self, context: Context, config):
         super().__init__(context)
@@ -34,7 +34,7 @@ class SklandPlugin(Star):
         self.web = BindingWeb(self.service, self.config.get('binding_public_url', 'https://maa.yumi233.cn'))
         await self.web.start_server(port=int(self.config.get('binding_port', 6190)))
         self.task = asyncio.create_task(self._loop())
-        logger.info('森空岛 v2.0.1：网页认证入口与恢复扫描已启动')
+        logger.info('森空岛 v2.0.2：网页认证入口与恢复扫描已启动')
 
     async def _migrate(self, root):
         if self.store.db.execute("SELECT 1 FROM meta WHERE key='migrated'").fetchone():

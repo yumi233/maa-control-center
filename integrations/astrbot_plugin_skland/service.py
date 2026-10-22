@@ -233,13 +233,35 @@ class Service:
                     self._failure(uid, '__account__', day, 'needs_auth' if expired else 'retry', '认证失效，请重新绑定' if expired else '上游连接或认证流程暂不可用', delay=getattr(exc, 'retry_after', 0))
                     return self.store.results(uid, day)
                 self.store.db.execute('DELETE FROM results WHERE identity=? AND day=? AND role=?', (uid, day, '__account__'))
-                data['role_keys'] = [key for key, _, _ in specs]
-                self.store.update(uid, version, data)
+                role_keys = [key for key, _, _ in specs]
+                if data.get('role_keys') != role_keys:
+                    data['role_keys'] = role_keys
+                    self.store.update(uid, version, data)
                 if not specs:
                     self.store.record(uid, '__account__', day, 'no_roles', '没有可签到角色')
                 for key, binding, role in specs:
                     old = next((r for r in self.store.results(uid, day) if r['role'] == key), None)
-                    if old and (old['state'] in DONE or old['attempts'] >= 4 or old['next_at'] > time.time()):
+                    if old and old['state'] in DONE:
+                        continue
+                    label = f'{binding.game_name} · {role.get("nickname", binding.nickname) if role else binding.nickname}'
+                    attempts = old['attempts'] if old else 0
+                    try:
+                        signed = await self.api.get_attendance_status(cred, binding, role)
+                    except Exception as exc:
+                        signed = None
+                        reference = self._attendance_error(exc)
+                    else:
+                        reference = None
+                    if signed is True:
+                        self.store.record(uid, key, day, 'already', label + '：已核实今日已签到', attempts)
+                        continue
+                    if signed is not False:
+                        message = label + '：签到状态暂无法核实，未重复提交；请稍后查询'
+                        if reference:
+                            message += f'（编号 {reference}）'
+                        self._failure(uid, key, day, 'unknown', message, max(1, attempts))
+                        continue
+                    if old and (old['attempts'] >= 4 or old['next_at'] > time.time()):
                         continue
                     attempt = (old['attempts'] if old else 0) + 1
                     self.store.record(uid, key, day, 'unknown', '请求处理中，异常中断后将核对或重试', attempt, time.time() + 60)
@@ -265,12 +287,29 @@ class Service:
                                 break
                             self._failure(uid, key, day, 'retry', f'{result.game}：签到未完成，请稍后重试', attempt)
                     except Exception as exc:
-                        kind = getattr(exc, 'kind', '')
+                        reference = self._attendance_error(exc)
                         wait = getattr(exc, 'retry_after', 0)
-                        self._failure(uid, key, day, 'unknown', '上游未确认结果，将有限重试', attempt, wait)
+                        # The write may have succeeded before a timeout or parsing error.
+                        # Reconcile with a read; never repeat the write here.
+                        try:
+                            confirmed = await self.api.get_attendance_status(cred, binding, role)
+                        except Exception:
+                            confirmed = None
+                        if confirmed is True:
+                            self.store.record(uid, key, day, 'already', label + '：已核实今日已签到', attempt)
+                        else:
+                            self._failure(uid, key, day, 'unknown', label + f'：结果待核实，请稍后查询（编号 {reference}）', attempt, wait)
                     # Keep spacing across roles as well as accounts.
                     await asyncio.sleep(max(0, float(self.config.get('auto_sign_delay', 10))) * secrets.randbelow(1001) / 1000)
                 return self.store.results(uid, day)
+
+    def _attendance_error(self, exc):
+        reference = secrets.token_hex(4)
+        status, code = getattr(exc, 'http_status', None), getattr(exc, 'code', None)
+        logger.warning('Skland attendance unconfirmed ref=%s type=%s http=%s code=%s',
+                       reference, type(exc).__name__, status if isinstance(status, int) else None,
+                       code if isinstance(code, int) else None)
+        return reference
 
     def _failure(self, uid, role, day, state, message, attempt=None, delay=0):
         previous = next((r for r in self.store.results(uid, day) if r['role'] == role), None)

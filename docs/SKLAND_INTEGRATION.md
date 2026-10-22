@@ -64,7 +64,7 @@ MAACC_SKLAND_UPSTREAM=http://astrbot:6190
 
 ## AstrBot 端配套
 
-网站本身不保存森空岛凭证、不执行 QQ 身份确认。配套源码在 [`integrations/astrbot_plugin_skland`](../integrations/astrbot_plugin_skland/README.md)，插件为改造后的 `astrbot_plugin_skland` v2.0.1；原作者 Azincc，保留原鉴权和游戏签到协议，新增服务层。
+网站本身不保存森空岛凭证、不执行 QQ 身份确认。配套源码在 [`integrations/astrbot_plugin_skland`](../integrations/astrbot_plugin_skland/README.md)，插件为改造后的 `astrbot_plugin_skland` v2.0.2；原作者 Azincc，保留原鉴权和游戏签到协议，新增服务层。
 
 - 插件代码：`/AstrBot/data/plugins/astrbot_plugin_skland/`。
 - 专用 API：容器内部 `0.0.0.0:6190`。
@@ -108,7 +108,7 @@ npm run build
 
 网站端完整实现随本集成提交纳入 Git。日常维护以当前仓库中的代码、README 和 AGENTS.md 为准，不依赖服务器本地源码目录或额外补丁文件。
 
-配套 AstrBot 插件源码随网站保存在 integrations 目录，但需单独部署；本仓库不包含用户数据库、主密钥、Token 或服务器私有配置。重新部署网站前，应确认插件 v2.0.1 的专用 API 仍可达。
+配套 AstrBot 插件源码随网站保存在 integrations 目录，但需单独部署；本仓库不包含用户数据库、主密钥、Token 或服务器私有配置。重新部署网站前，应确认插件 v2.0.2 的专用 API 仍可达。
 
 本集成尚未进入发布分支时，先合并集成提交，再发布后续版本。不要只复制本说明而遗漏上表列出的前后端代码及测试。
 
@@ -122,3 +122,9 @@ npm run build
 插件使用 `content=` 保证签名与实际请求字节一致时，必须显式设置 `Content-Type: application/json`。不能依赖 HTTP 客户端像 `json=` 那样自动补请求头；缺少该头会让鹰角接口将有效 JSON 当作缺少 token/appCode 的空参数。
 
 认证失败应只报告安全的阶段、HTTP/业务码与排查编号，不记录请求体、完整响应或凭证值。配套插件 v2.0.1 已加入对应协议和日志脱敏回归测试。
+
+## 今日签到核实
+
+v2.0.2 提交签到前先读取签到状态：明日方舟按服务端当日与 records 时间戳核对，终末地使用明确的 hasToday 布尔值。已签到只更新本地结果，不重新提交；无法核实时保留待核实状态。提交后的网络或响应异常也先只读核实，确认已签到即修正结果，不将显示错误当作签到失败盲目重发。
+
+历史待核实记录即使达到写入重试上限，仍可只读校验。自动签到开关继续保留原值；关闭时不承诺后台自动补签，用户可通过网页或 `/skdsign` 发起核实，`/skd` 只查询本地结果。签到查询不会重新发放或推算奖励。
