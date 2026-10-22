@@ -64,3 +64,9 @@ NAS 与 Windows 的 HTTPS 部署、Agent 登录启动任务及卸载方法见[�
 ## 许可
 
 本项目使用 [MIT](LICENSE)；字体及上游组件许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。本项目与游戏及其开发商无关联，不包含游戏官方素材。
+
+## 森空岛网页认证（无需管理面板账号）
+
+公共入口：[/skland](https://maa.yumi233.cn/skland)。用户在 QQ 群发起并确认身份后，在网页提交凭证并签到。
+
+这是需随网站一起维护的已上线功能。开发、部署与回归约定见 [森空岛集成说明](docs/SKLAND_INTEGRATION.md)，修改登录入口或发布新版本前请核对。

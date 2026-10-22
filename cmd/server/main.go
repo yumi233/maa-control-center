@@ -40,7 +40,7 @@ func main() {
 		if json.Unmarshal(b, &settings) != nil {
 			log.Fatal("invalid private configuration")
 		}
-		allowed := map[string]bool{"MAACC_PUBLIC_URL": true, "MAACC_ALLOWED_ORIGINS": true, "MAACC_LISTEN": true, "MAACC_DB": true, "MAACC_ADMIN_PASSWORD": true, "MAACC_AGENT_ID": true, "MAACC_AGENT_TOKEN": true, "MAACC_TLS_CERT": true, "MAACC_TLS_KEY": true, "MAACC_PRIMARY_NAME": true, "MAACC_SECONDARY_NAME": true, "MAACC_BINDINGS_FILE": true}
+		allowed := map[string]bool{"MAACC_SKLAND_UPSTREAM": true, "MAACC_PUBLIC_URL": true, "MAACC_ALLOWED_ORIGINS": true, "MAACC_LISTEN": true, "MAACC_DB": true, "MAACC_ADMIN_PASSWORD": true, "MAACC_AGENT_ID": true, "MAACC_AGENT_TOKEN": true, "MAACC_TLS_CERT": true, "MAACC_TLS_KEY": true, "MAACC_PRIMARY_NAME": true, "MAACC_SECONDARY_NAME": true, "MAACC_BINDINGS_FILE": true}
 		for k, v := range settings {
 			if !allowed[k] {
 				log.Fatal("unsupported private configuration key")

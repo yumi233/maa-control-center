@@ -147,6 +147,7 @@ func (s *Server) protect(next http.HandlerFunc) http.HandlerFunc {
 }
 func (s *Server) Handler() http.Handler {
 	m := http.NewServeMux()
+	s.sklandRoutes(m)
 	s.integrationRoutes(m)
 	s.userRoutes(m)
 	s.executionRoutes(m)
@@ -156,7 +157,7 @@ func (s *Server) Handler() http.Handler {
 			problem(w, 503, "database_unavailable", "数据库不可用")
 			return
 		}
-		send(w, 200, map[string]any{"status": "ok", "version": "0.5.0", "mode": "reviewed_configuration"})
+		send(w, 200, map[string]any{"status": "ok", "skland_binding": sklandEnabled(), "version": "0.5.0", "mode": "reviewed_configuration"})
 	})
 	m.HandleFunc("POST /api/v1/auth/login", s.login)
 	m.HandleFunc("GET /api/v1/auth/session", s.protect(func(w http.ResponseWriter, r *http.Request) {
