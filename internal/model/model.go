@@ -78,6 +78,32 @@ type Completion struct {
 	Source     string `json:"source"`
 }
 
+type SanityReading struct {
+	Current    int    `json:"current"`
+	Maximum    int    `json:"maximum"`
+	ObservedAt string `json:"observed_at"`
+}
+type StageActivity struct {
+	Stage       string `json:"stage"`
+	Settlements int    `json:"settlements"`
+}
+type ActivityDrop struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Quantity int    `json:"quantity"`
+}
+type RunActivity struct {
+	StartedAt    string          `json:"started_at"`
+	FinishedAt   string          `json:"finished_at"`
+	Tasks        []string        `json:"tasks"`
+	Stages       []StageActivity `json:"stages"`
+	Drops        []ActivityDrop  `json:"drops"`
+	FirstSanity  *SanityReading  `json:"first_sanity,omitempty"`
+	Sanity       *SanityReading  `json:"sanity,omitempty"`
+	LastBattleAt string          `json:"last_battle_at,omitempty"`
+	LogsComplete bool            `json:"logs_complete"`
+}
+
 type Binding struct {
 	AccountID  string `json:"account_id"`
 	AgentID    string `json:"agent_id"`

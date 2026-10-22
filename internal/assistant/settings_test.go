@@ -71,3 +71,27 @@ func TestAstrBotUMOValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestNotificationAccountScopeCannotSelectForeignAccount(t *testing.T) {
+	st, e := storage.Open(filepath.Join(t.TempDir(), "scope.db"), "fixture-password-12345", "", "")
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer st.DB.Close()
+	st.DB.Exec("INSERT INTO users(id,username,password_hash,role) VALUES('alice','alice','fixture','member')")
+	st.DB.Exec("UPDATE accounts SET owner_id='alice' WHERE id='secondary'")
+	v, _ := vault.New(make([]byte, 32))
+	s := assistant.SettingsStore{DB: st.DB, Vault: v, UserID: "alice"}
+	c := assistant.Channel{Kind: "astrbot", AccountIDs: []string{"primary"}}
+	if s.Save(assistant.Settings{Channels: []assistant.Channel{c}}) == nil {
+		t.Fatal("foreign account route accepted")
+	}
+	c.AccountIDs = []string{"secondary"}
+	if e = s.Save(assistant.Settings{Channels: []assistant.Channel{c}}); e != nil {
+		t.Fatal(e)
+	}
+	c.AccountIDs = []string{"missing"}
+	if s.Save(assistant.Settings{Channels: []assistant.Channel{c}}) == nil {
+		t.Fatal("nonexistent route accepted")
+	}
+}

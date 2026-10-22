@@ -13,3 +13,6 @@ var MultiUser string
 
 //go:embed 004_execution.sql
 var Execution string
+
+//go:embed 005_activity.sql
+var Activity string

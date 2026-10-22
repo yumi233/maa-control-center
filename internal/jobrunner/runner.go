@@ -28,11 +28,13 @@ type Command struct {
 	Monitor    bool   `json:"monitor"`
 }
 type Receipt struct {
-	Completion *model.Completion `json:"completion,omitempty"`
-	ID         string            `json:"id"`
-	State      string            `json:"state"`
-	Detail     string            `json:"detail"`
-	Time       string            `json:"time"`
+	StartedAt  string             `json:"started_at,omitempty"`
+	Activity   *model.RunActivity `json:"activity,omitempty"`
+	Completion *model.Completion  `json:"completion,omitempty"`
+	ID         string             `json:"id"`
+	State      string             `json:"state"`
+	Detail     string             `json:"detail"`
+	Time       string             `json:"time"`
 }
 type Controller interface {
 	Probe(string) (desktop.Snapshot, error)
@@ -125,6 +127,13 @@ func (r *Runner) Step(c Command) Receipt {
 	save := func(state, detail string) Receipt {
 		out.State = state
 		out.Detail = detail
+		if c.Type == "daily" && (rec.Stage == "running" || rec.Stage == "finished" || rec.Stopping) && !rec.Started.IsZero() && rec.PID != 0 {
+			out.StartedAt = rec.Started.UTC().Format(time.RFC3339)
+			if terminal(state) && state != "unknown" {
+				v := agent.Activity(root, rec.Started, now)
+				out.Activity = &v
+			}
+		}
 		rec.Command = c
 		rec.Receipt = out
 		if e := persist(path, rec); e != nil {
@@ -355,6 +364,18 @@ func (r Receipt) Valid() bool {
 		return false
 	}
 	_, e := time.Parse(time.RFC3339, r.Time)
+	end, _ := time.Parse(time.RFC3339Nano, r.Time)
+	if r.StartedAt != "" {
+		start, err := time.Parse(time.RFC3339Nano, r.StartedAt)
+		if err != nil || start.After(end) || end.Sub(start) > 48*time.Hour {
+			return false
+		}
+	}
+	if a := r.Activity; a != nil {
+		if !terminal(r.State) || r.State == "unknown" || r.StartedAt == "" || a.StartedAt != r.StartedAt || a.FinishedAt != r.Time || !a.Valid() {
+			return false
+		}
+	}
 	if c := r.Completion; c != nil {
 		at, ce := time.Parse(time.RFC3339, c.ObservedAt)
 		if ce != nil || at.After(time.Now().Add(2*time.Minute)) || !idPattern.MatchString(c.ID) || !regexp.MustCompile(`^[a-f0-9]{16}$`).MatchString(c.InstanceID) || c.State != r.State || (r.State != "completed" && r.State != "completed_with_errors") {

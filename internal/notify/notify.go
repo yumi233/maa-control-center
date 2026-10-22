@@ -19,18 +19,23 @@ import (
 	"time"
 
 	"github.com/yumi233/maa-control-center/internal/assistant"
+	"github.com/yumi233/maa-control-center/internal/model"
 	"github.com/yumi233/maa-control-center/internal/rules"
 )
 
 type Facts struct {
-	OwnerID string `json:"owner_id,omitempty"`
-	ID      string `json:"id"`
-	Kind    string `json:"kind"`
-	Account string `json:"account"`
-	State   string `json:"state"`
-	Time    string `json:"time"`
-	Detail  string `json:"detail"`
-	Source  string `json:"source"`
+	AccountID string             `json:"account_id,omitempty"`
+	StartedAt string             `json:"started_at,omitempty"`
+	Activity  *model.RunActivity `json:"activity,omitempty"`
+	Today     *DayActivity       `json:"today,omitempty"`
+	OwnerID   string             `json:"owner_id,omitempty"`
+	ID        string             `json:"id"`
+	Kind      string             `json:"kind"`
+	Account   string             `json:"account"`
+	State     string             `json:"state"`
+	Time      string             `json:"time"`
+	Detail    string             `json:"detail"`
+	Source    string             `json:"source"`
 }
 type Service struct {
 	Settings     assistant.SettingsStore
@@ -60,7 +65,7 @@ func Enqueue(db Execer, channels []assistant.Channel, f Facts) error {
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	for _, c := range channels {
-		if c.Enabled {
+		if c.Enabled && accepts(c, f) {
 			id := rules.Hash([]byte(owner(f.OwnerID) + "/" + f.ID + "/" + c.Kind))
 			_, e = db.Exec("INSERT OR IGNORE INTO notification_outbox(id,event_id,channel,facts,state,created_at,updated_at,owner_id) VALUES(?,?,?,?,'queued',?,?,?)", id, f.ID, c.Kind, string(b), now, now, owner(f.OwnerID))
 			if e != nil {
@@ -74,6 +79,9 @@ func Enqueue(db Execer, channels []assistant.Channel, f Facts) error {
 var friendly = map[string]string{"applied": "配置已应用并校验", "completed": "MAA 任务队列已完成", "completed_with_errors": "MAA 任务队列已结束，存在错误", "test": "通知连接测试", "blocked": "配置未应用", "conflict": "配置已变化，方案已拒绝", "expired": "方案已过期", "rejected": "方案未通过校验", "unknown": "结果待人工核实"}
 
 func Body(f Facts, intro string) string {
+	if f.Kind == "job" {
+		return jobBody(f, intro)
+	}
 	title := friendly[f.State]
 	if title == "" {
 		title = "任务状态更新"
@@ -262,6 +270,11 @@ func (s *Service) Drain(ctx context.Context) {
 			s.finish(id, "failed", "通知事实无效", "")
 			continue
 		}
+		// Recheck the current scope before delivery, including retries of older events.
+		if !accepts(*channel, facts) {
+			s.finish(id, "failed", "此记录不在渠道账号范围内", "")
+			continue
+		}
 		result, e := s.Settings.DB.Exec("UPDATE notification_outbox SET state='sending',updated_at=? WHERE id=? AND state='queued'", time.Now().UTC().Format(time.RFC3339), id)
 		if e != nil {
 			return
@@ -278,6 +291,18 @@ func (s *Service) Drain(ctx context.Context) {
 		}
 		s.finish(id, state, detail, message)
 	}
+}
+
+func accepts(c assistant.Channel, f Facts) bool {
+	if len(c.AccountIDs) == 0 || f.Kind == "test" {
+		return true
+	}
+	for _, id := range c.AccountIDs {
+		if f.AccountID != "" && f.AccountID == id {
+			return true
+		}
+	}
+	return false
 }
 func (s *Service) finish(id, state, detail, message string) {
 	_, _ = s.Settings.DB.Exec("UPDATE notification_outbox SET state=?,detail=?,message=?,updated_at=? WHERE id=?", state, detail, message, time.Now().UTC().Format(time.RFC3339), id)

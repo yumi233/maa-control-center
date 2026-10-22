@@ -28,23 +28,24 @@ type Schedule struct {
 	UpdatedAt string `json:"updated_at"`
 }
 type Job struct {
-	ID              string `json:"id"`
-	AccountID       string `json:"account_id"`
-	OwnerID         string `json:"owner_id"`
-	CreatedBy       string `json:"created_by"`
-	AgentID         string `json:"agent_id"`
-	InstanceID      string `json:"instance_id"`
-	ProfileID       string `json:"profile_id"`
-	Role            string `json:"role"`
-	Type            string `json:"type"`
-	State           string `json:"state"`
-	Detail          string `json:"detail"`
-	CreatedAt       string `json:"created_at"`
-	UpdatedAt       string `json:"updated_at"`
-	ExpiresAt       string `json:"expires_at"`
-	ScheduleID      string `json:"schedule_id"`
-	CancelRequested int    `json:"cancel_requested"`
-	Progress        int    `json:"progress"`
+	Activity        *model.RunActivity `json:"activity,omitempty"`
+	ID              string             `json:"id"`
+	AccountID       string             `json:"account_id"`
+	OwnerID         string             `json:"owner_id"`
+	CreatedBy       string             `json:"created_by"`
+	AgentID         string             `json:"agent_id"`
+	InstanceID      string             `json:"instance_id"`
+	ProfileID       string             `json:"profile_id"`
+	Role            string             `json:"role"`
+	Type            string             `json:"type"`
+	State           string             `json:"state"`
+	Detail          string             `json:"detail"`
+	CreatedAt       string             `json:"created_at"`
+	UpdatedAt       string             `json:"updated_at"`
+	ExpiresAt       string             `json:"expires_at"`
+	ScheduleID      string             `json:"schedule_id"`
+	CancelRequested int                `json:"cancel_requested"`
+	Progress        int                `json:"progress"`
 }
 
 const activeJobs = "('dispatched','waiting','starting','running','stopping','unknown')"
@@ -72,6 +73,13 @@ func (s *Server) executionRoutes(m *http.ServeMux) {
 	m.HandleFunc("GET /api/v1/jobs/{id}", s.protect(func(w http.ResponseWriter, r *http.Request) {
 		j := s.jobFor(w, r)
 		if j != nil {
+			var raw string
+			if s.Store.DB.QueryRow("SELECT document FROM job_activity WHERE job_id=?", j.ID).Scan(&raw) == nil {
+				var a model.RunActivity
+				if json.Unmarshal([]byte(raw), &a) == nil && a.Valid() {
+					j.Activity = &a
+				}
+			}
 			send(w, 200, j)
 		}
 	}))
@@ -489,7 +497,7 @@ func (s *Server) jobReceipt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var j Job
-	e := s.Store.DB.QueryRow("SELECT id,account_id,owner_id,state,type,instance_id FROM jobs WHERE id=? AND agent_id=?", receipt.ID, s.cfg.AgentID).Scan(&j.ID, &j.AccountID, &j.OwnerID, &j.State, &j.Type, &j.InstanceID)
+	e := s.Store.DB.QueryRow("SELECT id,account_id,owner_id,state,type,instance_id,created_at,updated_at FROM jobs WHERE id=? AND agent_id=?", receipt.ID, s.cfg.AgentID).Scan(&j.ID, &j.AccountID, &j.OwnerID, &j.State, &j.Type, &j.InstanceID, &j.CreatedAt, &j.UpdatedAt)
 	if e != nil {
 		problem(w, 404, "not_found", "任务不存在")
 		return
@@ -498,8 +506,29 @@ func (s *Server) jobReceipt(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "invalid_completion", "队列完成证据不属于此任务")
 		return
 	}
+	if receipt.StartedAt != "" {
+		start, _ := time.Parse(time.RFC3339Nano, receipt.StartedAt)
+		created, _ := time.Parse(time.RFC3339Nano, j.CreatedAt)
+		end, _ := time.Parse(time.RFC3339Nano, receipt.Time)
+		if j.Type != "daily" || start.Before(created) || end.After(time.Now().Add(2*time.Minute)) {
+			problem(w, 422, "invalid_activity", "执行明细时间或任务类型无效")
+			return
+		}
+	}
 	if j.State == "pending" || j.State == "cancelled" || j.State == "completed" || j.State == "completed_with_errors" || j.State == "failed" || j.State == "expired" {
 		if j.State == receipt.State {
+			// A compatible agent may supply missing historical telemetry once, without
+			// replaying the already delivered completion or rewriting its outcome.
+			if receipt.Activity != nil {
+				if receipt.Time != j.UpdatedAt {
+					problem(w, 409, "receipt_conflict", "历史明细结束时间不一致")
+					return
+				}
+				if e = saveActivity(s.Store.DB, receipt); e != nil {
+					s.result(w, nil, e)
+					return
+				}
+			}
 			send(w, 200, map[string]bool{"ok": true})
 			return
 		}
@@ -528,7 +557,13 @@ func (s *Server) jobReceipt(w http.ResponseWriter, r *http.Request) {
 		problem(w, 409, "receipt_conflict", "任务状态已变化")
 		return
 	}
-	if terminal && j.Type != "check" {
+	if receipt.Activity != nil {
+		if e = saveActivity(tx, receipt); e != nil {
+			s.result(w, nil, e)
+			return
+		}
+	}
+	if (terminal || receipt.State == "running") && j.Type != "check" {
 		// The same exact GUI marker may reach heartbeat before or after this receipt.
 		// Claim it in this transaction so the generic watcher cannot notify twice.
 		if c := receipt.Completion; c != nil {
@@ -539,7 +574,17 @@ func (s *Server) jobReceipt(w http.ResponseWriter, r *http.Request) {
 		}
 		var name string
 		_ = tx.QueryRow("SELECT name FROM accounts WHERE id=?", j.AccountID).Scan(&name)
-		if e = notify.Enqueue(tx, cfg.Channels, notify.Facts{OwnerID: j.OwnerID, ID: "job/" + j.ID, Kind: "job", Account: name, State: receipt.State, Time: receipt.Time, Detail: receipt.Detail, Source: "Windows原生任务入口、对应配置档、队列日志与窗口状态"}); e != nil {
+		f := notify.Facts{OwnerID: j.OwnerID, ID: "job/" + j.ID, Kind: "job", AccountID: j.AccountID, Account: name, State: receipt.State, Time: receipt.Time, Detail: receipt.Detail, StartedAt: receipt.StartedAt, Activity: receipt.Activity, Source: "Windows原生任务入口、对应配置档、队列日志与窗口状态"}
+		if receipt.State == "running" {
+			f.ID += "/started"
+		} else {
+			f.Today, e = notify.Today(tx, j.OwnerID, j.AccountID, receipt.Time)
+			if e != nil {
+				s.result(w, nil, e)
+				return
+			}
+		}
+		if e = notify.Enqueue(tx, cfg.Channels, f); e != nil {
 			s.result(w, nil, e)
 			return
 		}
@@ -552,6 +597,18 @@ func (s *Server) jobReceipt(w http.ResponseWriter, r *http.Request) {
 		_ = s.Store.Event("info", j.AccountID, receipt.Detail)
 	}
 	send(w, 200, map[string]bool{"ok": true})
+}
+
+func saveActivity(db notify.Execer, r jobrunner.Receipt) error {
+	if r.Activity == nil {
+		return nil
+	}
+	b, e := json.Marshal(r.Activity)
+	if e != nil {
+		return e
+	}
+	_, e = db.Exec("INSERT OR IGNORE INTO job_activity(job_id,started_at,finished_at,document) VALUES(?,?,?,?)", r.ID, r.StartedAt, r.Time, string(b))
+	return e
 }
 func (s *Server) executionBusy(instance string) bool {
 	var n int

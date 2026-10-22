@@ -578,7 +578,7 @@ func (s *Server) configReceipt(w http.ResponseWriter, r *http.Request) {
 	}
 	n, _ := result.RowsAffected()
 	if !p.Silent {
-		e = notify.Enqueue(tx, cfg.Channels, notify.Facts{OwnerID: p.OwnerID, ID: p.ID, Kind: "config", Account: p.AccountID, State: receipt.State, Time: receipt.Time, Detail: receipt.Message, Source: "Windows Agent 备份与重新读取校验"})
+		e = notify.Enqueue(tx, cfg.Channels, notify.Facts{OwnerID: p.OwnerID, ID: p.ID, Kind: "config", AccountID: p.AccountID, Account: p.AccountID, State: receipt.State, Time: receipt.Time, Detail: receipt.Message, Source: "Windows Agent 备份与重新读取校验"})
 	}
 	if e != nil {
 		problem(w, 500, "notification_queue_failed", "回执与通知事务未提交，Agent 将用同一回执重试")

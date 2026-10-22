@@ -11,17 +11,18 @@ import (
 )
 
 type Channel struct {
-	PublicOnly       bool   `json:"-"`
-	Kind             string `json:"kind"`
-	Enabled          bool   `json:"enabled"`
-	Token            string `json:"token,omitempty"`
-	Configured       bool   `json:"configured"`
-	ChatID           string `json:"chat_id"`
-	BaseURL          string `json:"base_url,omitempty"`
-	TargetType       string `json:"target_type,omitempty"`
-	TargetID         string `json:"target_id,omitempty"`
-	AllowPrivateHTTP bool   `json:"allow_private_http"`
-	ClearKey         bool   `json:"clear_key,omitempty"`
+	AccountIDs       []string `json:"account_ids,omitempty"`
+	PublicOnly       bool     `json:"-"`
+	Kind             string   `json:"kind"`
+	Enabled          bool     `json:"enabled"`
+	Token            string   `json:"token,omitempty"`
+	Configured       bool     `json:"configured"`
+	ChatID           string   `json:"chat_id"`
+	BaseURL          string   `json:"base_url,omitempty"`
+	TargetType       string   `json:"target_type,omitempty"`
+	TargetID         string   `json:"target_id,omitempty"`
+	AllowPrivateHTTP bool     `json:"allow_private_http"`
+	ClearKey         bool     `json:"clear_key,omitempty"`
 }
 type Settings struct {
 	Provider Provider  `json:"provider"`
@@ -148,6 +149,17 @@ func (s SettingsStore) Save(v Settings) error {
 			return fmt.Errorf("通知渠道无效或重复")
 		}
 		seen[c.Kind] = true
+		if len(c.AccountIDs) > 100 {
+			return fmt.Errorf("通知账号范围过大")
+		}
+		accounts := map[string]bool{}
+		for _, id := range c.AccountIDs {
+			var accountOwner string
+			if accounts[id] || s.DB.QueryRow("SELECT owner_id FROM accounts WHERE id=?", id).Scan(&accountOwner) != nil || (s.restricted() && accountOwner != s.UserID) {
+				return fmt.Errorf("通知账号无效或无权访问")
+			}
+			accounts[id] = true
+		}
 		if c.Token == "" && !c.ClearKey {
 			for _, prior := range old.Channels {
 				if prior.Kind == c.Kind {

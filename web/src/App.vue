@@ -32,7 +32,7 @@ const configAccountID=ref(''),configInitialMode=ref('tasks'),runAccountID=ref(''
 const page = ref<Page>('overview')
 const currentNav = computed(() => nav.find(n => n.id === page.value)!)
 const demo = ref(new URLSearchParams(location.search).get('demo') === '1')
-const data = ref<Overview>(demo.value ? makeDemo() : {accounts: [], agents: [], jobs: [], events: [], server_time: '', mode: 'read_only', version: '0.4.3'})
+const data = ref<Overview>(demo.value ? makeDemo() : {accounts: [], agents: [], jobs: [], events: [], server_time: '', mode: 'read_only', version: '0.4.4'})
 const loggedIn = ref(false), checking = ref(true), busy = ref(false), connected = ref(false), mobileNav = ref(false)
 const username = ref('admin'), password = ref(''), loginError = ref(''), toast = ref(''), fetchError = ref('')
 const date = ref(new Date()), theme = ref(document.documentElement.dataset.theme || 'light')
@@ -84,7 +84,7 @@ async function login() {
  try {const r = await request<{id:string;username:string;role:string;csrf_token: string}>('/auth/login', {method: 'POST', body: JSON.stringify({username: username.value, password: password.value})}); setCSRF(r.csrf_token); sessionUser.value={id:r.id,username:r.username,role:r.role}; password.value = ''; loggedIn.value = true; await refresh(true)}
  catch (e) {loginError.value = (e as Error).message} finally {busy.value = false}
 }
-function clearSession(){loggedIn.value=false;setCSRF('');drawer.value=null;taskModal.value=false;help.value=false;page.value='overview';data.value={accounts:[],agents:[],events:[],jobs:[],server_time:'',mode:'reviewed_configuration',version:'0.4.3'}}
+function clearSession(){loggedIn.value=false;setCSRF('');drawer.value=null;taskModal.value=false;help.value=false;page.value='overview';data.value={accounts:[],agents:[],events:[],jobs:[],server_time:'',mode:'reviewed_configuration',version:'0.4.4'}}
 function passwordChanged(){clearSession();notify('密码已修改，请使用新密码重新登录')}
 async function logout() {if (!demo.value) {try {await request('/auth/logout', {method: 'POST'})} catch {notify('退出失败，请重试'); return}} clearSession()}
 function openDetails(a: Account) {drawer.value = a; drawerTab.value = 'overview'; preview.value = null; formPolicy.value = {...a.policy}; selectedBinding.value = ''}
@@ -139,7 +139,7 @@ onUnmounted(() => {window.removeEventListener('maacc-session-expired',clearSessi
 <template>
  <div class="startup" v-if="checking"><span class="brand-mark">M<span></span></span><p>正在连接管理中心…</p></div>
  <div v-else-if="!loggedIn" class="login-layout">
-  <div class="login-story"><a class="brand" href="/"><span class="brand-mark">M<span></span></span><div><strong>MAA</strong><small>CONTROL CENTER</small></div></a><div class="login-title"><span class="eyebrow">// YOUR DAILY OPERATIONS</span><h1>让日常，<br>有条不紊。</h1><p>看见每个账号的运行状态，<br>让现有的挂机安排继续安心运转。</p></div><SystemGraph :agent-online="false" :maa-running="false" :connected="false" :demo="false"/><span class="login-foot">SELF-HOSTED / OPEN SOURCE / V0.4.3</span></div>
+  <div class="login-story"><a class="brand" href="/"><span class="brand-mark">M<span></span></span><div><strong>MAA</strong><small>CONTROL CENTER</small></div></a><div class="login-title"><span class="eyebrow">// YOUR DAILY OPERATIONS</span><h1>让日常，<br>有条不紊。</h1><p>看见每个账号的运行状态，<br>让现有的挂机安排继续安心运转。</p></div><SystemGraph :agent-online="false" :maa-running="false" :connected="false" :demo="false"/><span class="login-foot">SELF-HOSTED / OPEN SOURCE / V0.4.4</span></div>
   <main class="login-panel"><button class="icon-button login-theme" aria-label="切换深浅主题" @click="toggleTheme"><Moon v-if="theme === 'light'" :size="20"/><Sun v-else :size="20"/></button><div class="login-form-wrap"><span class="eyebrow">// WORKSPACE ACCESS</span><h2>登录控制中心</h2><p class="muted">所有账号与设备，由你掌控。</p><form @submit.prevent="login"><label>登录账号<input v-model="username" name="username" autocomplete="username" required/></label><label>登录密码<input v-model="password" type="password" name="password" autocomplete="current-password" required placeholder="输入登录密码"/></label><p class="inline-alert" role="alert" v-if="loginError">{{ loginError }}</p><button class="button primary" type="submit" :disabled="busy">{{ busy ? '正在登录…' : '进入管理中心' }}<ArrowRight :size="18"/></button></form><div class="login-security"><LockKeyhole :size="14"/>独立部署 / 账号数据保存在自己的设备</div><button class="text-button" @click="toggleDemo">先看看交互演示<ArrowUpRight :size="15"/></button></div></main>
  </div>
  <div v-else class="app-shell" :inert="!!drawer || taskModal || help">

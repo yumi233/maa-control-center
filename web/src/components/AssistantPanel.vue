@@ -5,7 +5,7 @@ import {request} from '../api'
 import type {Account} from '../types'
 
 const props = defineProps<{accounts: Account[]; demo: boolean;admin:boolean}>()
-type Channel = {kind: string; enabled: boolean; token: string; configured: boolean; chat_id: string; base_url: string; target_type: string; target_id: string; allow_private_http: boolean; clear_key?: boolean}
+type Channel = {kind: string; enabled: boolean; token: string; configured: boolean; chat_id: string; base_url: string; target_type: string; target_id: string; allow_private_http: boolean; clear_key?: boolean; account_ids?: string[]}
 type Settings = {provider: {base_url: string; model: string; api_key: string; configured: boolean; allow_private_http: boolean; clear_key?: boolean; token_limit_field?: string}; channels: Channel[]; creative: boolean}
 type Diff = {path: string; before: unknown; after: unknown}
 type Plan = {id: string; account_id: string; target: string; summary: string; state: string; diff: Diff[]; before_hash: string; after_hash: string; created_at: string; expires_at: string; receipt: string; rollback_of: string}
@@ -17,6 +17,7 @@ const selected = computed(() => props.accounts.find(a => a.id === selectedID.val
 const planAccount = computed(() => props.accounts.find(a => a.id === selectedPlan.value?.account_id))
 const stateLabels: Record<string, string> = {draft:'待确认', queued:'等待 Windows 复核', dispatched:'Windows 正在处理', applied:'已应用并校验', blocked:'未应用', conflict:'配置已变化', rejected:'规则已拒绝', expired:'已过期', cancelled:'已取消', unknown:'待人工核实', queued_notification:'待发送', sending:'发送中', sent:'渠道已接收', failed:'发送失败'}
 const channelNames: Record<string, string> = {telegram:'Telegram', qq:'QQ / OneBot', astrbot:'QQ 官方机器人 / AstrBot'}
+function routeChannel(c: Channel, event: Event) {const id = (event.target as HTMLSelectElement).value; c.account_ids = id ? [id] : []}
 const stateLabel = (state: string) => stateLabels[state] || state
 const display = (v: unknown) => v === undefined || v === null ? '未设置' : typeof v === 'boolean' ? v ? '开启' : '关闭' : typeof v === 'object' ? JSON.stringify(v) : String(v)
 const date = (s: string) => new Date(s).toLocaleString('zh-CN', {hour12: false})
@@ -72,6 +73,8 @@ onUnmounted(() => clearInterval(timer))
       <label v-if="admin" class="agent-check"><input type="checkbox" v-model="c.allow_private_http"/>允许此内网通知接口</label>
       <p class="muted">AstrBot 负责发送消息。QQ 官方平台可能限制主动消息的时段或次数，请以发送回执和实际收件为准。</p>
      </template>
+     <label>接收账号<select :value="c.account_ids?.[0] || ''" @change="routeChannel(c, $event)"><option value="">全部账号</option><option v-for="a in accounts" :key="a.id" :value="a.id">仅 {{ a.name }}</option></select></label>
+     <p class="muted">指定账号后，此接收端只收到该账号的记录。挂机开始通知一次，结束通知包含理智读数、本次执行和今日汇总；未采集的信息会注明。</p>
      <label class="agent-check"><input type="checkbox" v-model="c.clear_key"/>清除此渠道已保存的密钥</label>
      <button type="button" class="button" :aria-label="'仅测试已保存的 ' + (channelNames[c.kind] || c.kind)" :disabled="busy || !c.enabled || (c.kind !== 'qq' && !c.configured)" @click="test('notifications', c.kind)">测试已保存接入<Send :size="16"/></button>
     </div><label class="agent-check agent-creative"><input type="checkbox" v-model="settings.creative"/><span>让 Agent 为通知选择更自然的表达<small>任务状态、时间和校验结果始终由固定事实摘要提供。模型不可用时正常发送。</small></span></label><div class="agent-button-row"><button class="button primary" :disabled="busy">保存通知设置<Check :size="16"/></button><button type="button" class="button" :disabled="busy" @click="test('notifications')">测试全部已启用渠道<Send :size="16"/></button></div></form></section>
