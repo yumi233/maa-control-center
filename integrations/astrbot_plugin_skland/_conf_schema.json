@@ -2,8 +2,8 @@
   "auto_sign_enabled": {
     "description": "自动签到开关",
     "type": "bool",
-    "default": false,
-    "hint": "开启后按北京时间执行；重启后扫描当日漏签。通知默认关闭。"
+    "default": true,
+    "hint": "默认开启，每日北京时间 09:00 执行；重启后扫描当日漏签。用户可单独关闭参与，通知默认关闭。"
   },
   "show_player_name": {
     "description": "显示玩家名称",

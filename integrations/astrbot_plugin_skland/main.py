@@ -13,7 +13,7 @@ from .service import Service, identity, now, DONE
 from .web import BindingWeb
 
 
-@register('astrbot_plugin_skland', 'Azincc / yumi', '森空岛群聊网页认证与可靠签到', '2.0.2')
+@register('astrbot_plugin_skland', 'Azincc / yumi', '森空岛群聊网页认证与可靠签到', '2.1.0')
 class SklandPlugin(Star):
     def __init__(self, context: Context, config):
         super().__init__(context)
@@ -34,7 +34,7 @@ class SklandPlugin(Star):
         self.web = BindingWeb(self.service, self.config.get('binding_public_url', 'https://maa.yumi233.cn'))
         await self.web.start_server(port=int(self.config.get('binding_port', 6190)))
         self.task = asyncio.create_task(self._loop())
-        logger.info('森空岛 v2.0.2：网页认证入口与恢复扫描已启动')
+        logger.info('森空岛 v2.1.0：网页认证入口与恢复扫描已启动')
 
     async def _migrate(self, root):
         if self.store.db.execute("SELECT 1 FROM meta WHERE key='migrated'").fetchone():
@@ -59,7 +59,7 @@ class SklandPlugin(Star):
                     self.store.put(uid, {'token': data.get('token', ''), 'nickname': data.get('nickname', ''),
                         'sender': str(sender), 'origin': origin, 'group_id': '', 'auto': True, 'notify': 'off',
                         'auth_status': 'active' if data.get('token') else 'expired', 'bound_at': data.get('bound_at', ''),
-                        'legacy_last_sign': data.get('last_sign', {})})
+                        'legacy_last_sign': data.get('last_sign', {})}, legacy_import=True)
         self.store.db.execute("INSERT OR REPLACE INTO meta VALUES('migrated','1')")
         await self.put_kv_data('users', {})
         await self.put_kv_data('groups', {})
@@ -106,7 +106,7 @@ class SklandPlugin(Star):
 
     @filter.command('skdhelp')
     async def skdhelp(self, event: AstrMessageEvent):
-        yield event.plain_result('森空岛签到\n/skdlogin 网页绑定或更新凭证\n/skdconfirm 确认码：确认网页归属\n/skdsign 本人签到\n/skd 查询本人今日状态（不执行签到）\n/skdlogout 解绑\n/skdnotify off|failure|daily 通知设置\n/skdusers 人数与名额\n/skdgroup 本群授权摘要；/skdshare on|off 个人公开设置\n请勿在群内发送 Token。无需私聊机器人。')
+        yield event.plain_result('森空岛签到\n/skdlogin 网页绑定或更新凭证\n/skdconfirm 确认码：确认网页归属\n/skdsign 本人签到\n/skd 查询本人今日状态（不执行签到）\n/skdlogout 解绑\n/skdnotify off|failure|daily 通知设置\n/skdauto on|off 本人自动签到开关\n/skdusers 人数与名额\n/skdgroup 本群授权摘要；/skdshare on|off 个人公开设置\n请勿在群内发送 Token。无需私聊机器人。')
 
     @filter.command('skdlogin')
     async def skdlogin(self, event: AstrMessageEvent, token: str = ''):
@@ -194,6 +194,28 @@ class SklandPlugin(Star):
             data.update(notify=mode, origin=event.unified_msg_origin, group_id=str(event.get_group_id() or ''), sender=str(event.get_sender_id()))
             self.store.update(uid, version, data)
         yield event.plain_result('通知设置已更新；群通知仅显示签到摘要。')
+
+    @filter.command('skdauto')
+    async def skdauto(self, event: AstrMessageEvent, mode: str = ''):
+        uid = identity(event)
+        async with self.service.lock(uid):
+            account = self.store.account(uid)
+            if not account:
+                yield event.plain_result('请先发送 /skdlogin 绑定。')
+                return
+            version, data = account
+            if mode not in ('on', 'off'):
+                yield event.plain_result('本人自动签到：' + ('开启' if data.get('auto', True) else '关闭') + '\n/skdauto on 开启\n/skdauto off 关闭')
+                return
+            if mode == 'on' and (data.get('binding_conflict') or data.get('dedupe_pending') or self.store.conflicted(uid)):
+                yield event.plain_result('此账号尚未通过查重，请先处理重复项并通过 /skdlogin 重新验证。')
+                return
+            data['auto'] = mode == 'on'
+            self.store.update(uid, version, data)
+        if mode == 'on' and not self.config.get('auto_sign_enabled', True):
+            yield event.plain_result('本人已选择参与自动签到；管理员总开关当前关闭，开启后生效。')
+        else:
+            yield event.plain_result('本人自动签到已' + ('开启；按已配置的北京时间每日计划执行。' if mode == 'on' else '关闭；仍可手动 /skdsign。'))
 
     @filter.command('skdshare')
     async def skdshare(self, event: AstrMessageEvent, mode: str = ''):

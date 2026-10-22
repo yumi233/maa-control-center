@@ -38,7 +38,7 @@ class API:
         return 'grant'
     async def get_credential(self, grant): return 'cred'
     async def get_binding_list(self, cred):
-        return [SimpleNamespace(app_code='arknights', game_name='明日方舟',nickname='tester',game_id=1,uid='a',roles=[])]
+        return [SimpleNamespace(app_code='arknights', game_name='明日方舟',nickname='tester',game_id=1,uid='other' if self.last_token=='OTHER_TOKEN' else 'a',roles=[])]
     async def sign_arknights(self, cred, binding):
         self.calls += 1
         return SimpleNamespace(success=True,error='',game='明日方舟',nickname='tester',awards=[])
@@ -381,12 +381,13 @@ class ProtocolTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(body['token'],'HG_TOKEN')
                 return httpx.Response(200,json={'status':0,'data':{'code':'grant'}})
             self.assertEqual(body,{'code':'grant','kind':1})
-            return httpx.Response(200,json={'code':0,'data':{'token':'SIGN_TOKEN','cred':'CRED'}})
+            return httpx.Response(200,json={'code':0,'data':{'token':'SIGN_TOKEN','cred':'CRED','userId':'stable-account'}})
         api._client=httpx.AsyncClient(transport=httpx.MockTransport(handle))
         try:
             grant=await api.get_authorization('HG_TOKEN')
             credential=await api.get_credential(grant)
             self.assertEqual(credential.cred,'CRED')
+            self.assertEqual(credential.user_id,'stable-account')
             self.assertEqual(len(seen),2)
         finally:await api.close()
 

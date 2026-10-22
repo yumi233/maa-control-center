@@ -108,15 +108,21 @@ class Service:
         data = {'confirmed': bool(session['confirmed']), 'csrf': session['csrf'], 'expires_at': session['expires'],
                 'complete': session['status'] == 'complete', 'request_id': session['request_id'],
                 'signing': session['identity'] in self.tasks,
-                'schedule': {'enabled': bool(self.config.get('auto_sign_enabled', False)),
+                'schedule': {'enabled': bool(self.config.get('auto_sign_enabled', True)),
                              'time': f"{int(self.config.get('auto_sign_hour', 9)):02d}:{int(self.config.get('auto_sign_minute', 0)):02d}"}}
         if session['confirmed']:
+            account = self.store.account(session['identity'])
+            data['auto_sign'] = account[1].get('auto', True) if account else True
+            data['binding_conflict'] = bool(account and (account[1].get('binding_conflict') or self.store.conflicted(session['identity'])))
+            data['binding_validation_pending'] = bool(account and account[1].get('dedupe_pending'))
             sender = session['sender']
             data['qq'] = sender[:3] + '****' + sender[-2:]
             if 'token' in pending:
                 data['roles'] = pending['roles']
                 data['credential_source'] = pending.get('credential_source', 'Token 文本')
                 data['nickname'] = pending['nickname']
+                if account:
+                    data['binding_mode'] = 'refresh' if set(self.store.claims(account[1])) & set(pending.get('claim_keys', [])) else 'replace'
             if session['status'] == 'complete':
                 data['results'] = self.store.results(session['identity'], now().date().isoformat())
         else:
@@ -155,7 +161,10 @@ class Service:
             raise ValueError(f'{label}{reason}（编号 {reference}{details}）。请勿在聊天中发送 Token。') from None
         if not specs:
             raise ValueError('认证通过，但没有可签到角色；请先在森空岛绑定游戏角色')
-        pending = {'token': token, 'credential_source': credential_source, 'nickname': bindings[0].nickname, 'roles': [f'{b.game_name} · {r.get("nickname", b.nickname) if r else b.nickname}' for _, b, r in specs]}
+        keys = sorted({key for key, _, _ in specs})
+        claims = self.store.make_claims(token, keys, getattr(cred, 'user_id', ''))
+        self.store.assert_available(session['identity'], claims)
+        pending = {'token': token, 'claim_keys': claims, 'role_keys': keys, 'credential_source': credential_source, 'nickname': bindings[0].nickname, 'roles': [f'{b.game_name} · {r.get("nickname", b.nickname) if r else b.nickname}' for _, b, r in specs]}
         # Network calls yielded: recheck session authorization and account generation.
         fresh = self.session(cookie)
         if not fresh['confirmed'] or fresh['status'] != 'open':
@@ -163,7 +172,7 @@ class Service:
         self.store.db.execute('UPDATE sessions SET pending=? WHERE id=?', (self.store.seal(pending), fresh['id']))
         return pending['roles']
 
-    async def commit(self, cookie, auto=True):
+    async def commit(self, cookie, auto=None):
         session = self.session(cookie)
         uid = session['identity']
         async with self.lock(uid):
@@ -173,15 +182,26 @@ class Service:
             pending = self.store.unseal(session['pending']) if session['pending'] else {}
             if not session['confirmed'] or 'token' not in pending:
                 raise ValueError('请先验证凭证并确认角色')
+            if not pending.get('claim_keys') or not pending.get('role_keys'):
+                raise ValueError('绑定页面已更新，请重新验证凭证后再确认，现有绑定保持不变')
             previous = self.store.account(uid)
+            if auto is None:
+                auto = previous[1].get('auto', True) if previous else True
+            if not isinstance(auto, bool):
+                raise ValueError('自动签到选项必须为开启或关闭')
             data = {'token': pending['token'], 'nickname': pending['nickname'], 'origin': session['origin'],
                     'group_id': session['group_id'], 'sender': session['sender'], 'auto': bool(auto),
-                    'notify': 'off', 'auth_status': 'active', 'roles': pending['roles'], 'bound_at': now().isoformat()}
+                    'notify': 'off', 'auth_status': 'active', 'roles': pending['roles'], 'role_keys': pending['role_keys'],
+                    'claim_keys': pending['claim_keys'], 'bound_at': now().isoformat()}
             if previous:
                 data['notify'] = previous[1].get('notify', 'off')
                 data['public_groups'] = previous[1].get('public_groups', [])
             def finalize():
-                self.store.db.execute('DELETE FROM results WHERE identity=?', (uid,))
+                if previous and set(self.store.claims(previous[1])) & set(pending['claim_keys']):
+                    placeholders = ','.join('?' for _ in pending['role_keys'])
+                    self.store.db.execute(f'DELETE FROM results WHERE identity=? AND role NOT IN ({placeholders})', (uid, *pending['role_keys']))
+                else:
+                    self.store.db.execute('DELETE FROM results WHERE identity=?', (uid,))
                 self.store.db.execute('UPDATE requests SET status=? WHERE id=?', ('complete', session['request_id']))
                 self.store.db.execute('UPDATE sessions SET pending=NULL WHERE id=?', (session['id'],))
             self.store.put(uid, data, expected=session['version'], max_users=int(self.config.get('max_users', 10)), finalize=finalize)
@@ -211,6 +231,10 @@ class Service:
             if not current:
                 raise ValueError('尚未绑定，请发送 /skdlogin')
             version, data = current
+            if data.get('dedupe_pending'):
+                raise ValueError('旧绑定尚未完成账号查重，请先发送 /skdlogin 重新验证')
+            if data.get('binding_conflict') or self.store.conflicted(uid):
+                raise ValueError('此游戏账号存在重复绑定，已暂停执行；请先保留一个绑定并解绑重复项')
             day = now().date().isoformat()
             if data.get('auth_status') == 'expired':
                 raise ValueError('认证已失效，请发送 /skdlogin 更新认证')
@@ -233,9 +257,18 @@ class Service:
                     self._failure(uid, '__account__', day, 'needs_auth' if expired else 'retry', '认证失效，请重新绑定' if expired else '上游连接或认证流程暂不可用', delay=getattr(exc, 'retry_after', 0))
                     return self.store.results(uid, day)
                 self.store.db.execute('DELETE FROM results WHERE identity=? AND day=? AND role=?', (uid, day, '__account__'))
-                role_keys = [key for key, _, _ in specs]
-                if data.get('role_keys') != role_keys:
+                role_keys = sorted({key for key, _, _ in specs})
+                claim_keys = self.store.make_claims(data.get('token', ''), role_keys, getattr(cred, 'user_id', ''))
+                try:
+                    self.store.assert_available(uid, claim_keys)
+                except ValueError:
+                    data['binding_conflict'] = True
+                    self.store.update(uid, version, data)
+                    self._failure(uid, '__account__', day, 'duplicate', '游戏账号重复绑定，已暂停；请先解绑重复项，再重新验证', delay=3600)
+                    return self.store.results(uid, day)
+                if data.get('role_keys') != role_keys or data.get('claim_keys') != claim_keys:
                     data['role_keys'] = role_keys
+                    data['claim_keys'] = claim_keys
                     self.store.update(uid, version, data)
                 if not specs:
                     self.store.record(uid, '__account__', day, 'no_roles', '没有可签到角色')
@@ -320,13 +353,16 @@ class Service:
         today = now().date().isoformat()
         clock = now().hour * 60 + now().minute
         target = int(self.config.get('auto_sign_hour', 9)) * 60 + int(self.config.get('auto_sign_minute', 0))
-        if not self.config.get('auto_sign_enabled', False) or clock < target:
+        if not self.config.get('auto_sign_enabled', True) or clock < target:
             return []
         out = []
         for uid, version, data in self.store.accounts():
-            if not data.get('auto', True) or data.get('auth_status') == 'expired':
+            if not data.get('auto', True) or data.get('auth_status') == 'expired' or data.get('dedupe_pending') or data.get('binding_conflict') or self.store.conflicted(uid):
                 continue
             rows = self.store.results(uid, today)
+            account_failure = next((r for r in rows if r['role'] == '__account__'), None)
+            if account_failure and (account_failure['state'] in {'needs_auth', 'no_roles', 'duplicate'} or account_failure['attempts'] >= 4 or account_failure['next_at'] > time.time()):
+                continue
             if rows and (not data.get('role_keys') or all(any(r['role'] == key for r in rows) for key in data['role_keys'])) and all(r['state'] in DONE or r['state'] in {'needs_auth', 'no_roles'} or r['attempts'] >= 4 or r['next_at'] > time.time() for r in rows):
                 continue
             results = await self.sign(uid)

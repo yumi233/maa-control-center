@@ -1,6 +1,6 @@
 name: astrbot_plugin_skland
 display_name: 森空岛签到
 desc: 森空岛签到，支持终末地和明日方舟，群聊网页认证、加密保存、角色级签到与漏签恢复
-version: v2.0.2
+version: v2.1.0
 author: Azincc
 repo: https://github.com/Azincc/astrbot_plugin_skland

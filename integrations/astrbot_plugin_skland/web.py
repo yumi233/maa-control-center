@@ -73,9 +73,9 @@ class BindingWeb:
 
     async def commit(self, request):
         data = await request.json()
-        if data.get('consent') is not True or not isinstance(data.get('auto', True), bool):
+        if data.get('consent') is not True or ('auto' in data and not isinstance(data['auto'], bool)):
             raise ValueError('请确认保存凭证与自动签到设置')
-        await self.service.commit(request.cookies.get(COOKIE, ''), data.get('auto', True))
+        await self.service.commit(request.cookies.get(COOKIE, ''), data.get('auto'))
         return await self.status(request)
 
     async def sign(self, request):

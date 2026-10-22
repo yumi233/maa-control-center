@@ -1,4 +1,4 @@
-# AstrBot 森空岛群聊网页认证插件 v2.0.2
+# AstrBot 森空岛群聊网页认证插件 v2.1.0
 
 基于 [Azincc/astrbot_plugin_skland](https://github.com/Azincc/astrbot_plugin_skland) v1.4.0 改造，保留上游森空岛 API 与游戏签到实现及作者署名。与网站公共 `/skland` 页面配套，部署说明见 [网站集成文档](../../docs/SKLAND_INTEGRATION.md)。
 
@@ -35,3 +35,9 @@ python -m unittest discover -s integrations/astrbot_plugin_skland/tests
 ```
 
 测试使用模拟凭证和 HTTP 响应，不读取生产凭证，不访问真实账号，不发送 QQ 消息。
+
+## v2.1.0 账号查重与默认自动签到
+
+同一森空岛账号或游戏角色跨 QQ、跨机器人实例不可重复绑定，验证和事务提交均会检查。本人更新 Token 保留签到记录与关闭选择；原 QQ 解绑后可在新 QQ 重新绑定。历史冲突不会自动删除。
+
+新绑定默认参与每日北京时间 09:00 自动签到，支持 `/skdauto on|off`；显式关闭的个人或管理员开关不会被版本升级覆盖。默认通知仍关闭。

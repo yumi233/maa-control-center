@@ -125,6 +125,7 @@ class Credential:
 
     token: str
     cred: str
+    user_id: str = ''
 
 
 class SklandAPI:
@@ -415,7 +416,7 @@ class SklandAPI:
             raise UpstreamError('protocol', stage='credential', code=response.get('code'))
 
         data = response["data"]
-        return Credential(token=data["token"], cred=data["cred"])
+        return Credential(token=data["token"], cred=data["cred"], user_id=str(data.get("userId") or ''))
 
     def _get_signed_headers(
         self,

@@ -1,5 +1,6 @@
 """Transactional, encrypted per-account storage. No credentials in public rows."""
 import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -28,6 +29,7 @@ class Store:
                 f.write(Fernet.generate_key())
         os.chmod(key, 0o600)
         self.cipher = Fernet(key.read_bytes())
+        self.claim_key = hmac.digest(key.read_bytes(), b'skland/account-claims/v1', 'sha256')
         self.db = sqlite3.connect(root / 'skland.sqlite3', isolation_level=None)
         self.db.row_factory = sqlite3.Row
         self.db.execute('PRAGMA journal_mode=WAL')
@@ -43,8 +45,44 @@ class Store:
           state TEXT NOT NULL,message TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,next_at REAL NOT NULL DEFAULT 0,
           PRIMARY KEY(identity,role,day));
         CREATE TABLE IF NOT EXISTS limits(key TEXT PRIMARY KEY,count INTEGER NOT NULL,expires REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS account_claims(claim TEXT NOT NULL,identity TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+          PRIMARY KEY(claim,identity));
+        CREATE INDEX IF NOT EXISTS account_claims_owner ON account_claims(identity);
         ''')
         os.chmod(root / 'skland.sqlite3', 0o600)
+        self.rebuild_claims()
+
+    def make_claims(self, token='', role_keys=(), user_id=''):
+        values = [('token', token), ('account', user_id)] + [('role', r) for r in role_keys]
+        return sorted({hmac.new(self.claim_key, json.dumps([kind, str(value)], separators=(',', ':')).encode(), hashlib.sha256).hexdigest()
+                       for kind, value in values if value is not None and str(value)})
+
+    def claims(self, payload):
+        return sorted(set(payload.get('claim_keys', [])) | set(self.make_claims(payload.get('token', ''), payload.get('role_keys', []))))
+
+    def rebuild_claims(self):
+        # Legacy collisions are retained and blocked, never silently deleted.
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            self.db.execute('DELETE FROM account_claims')
+            for uid, _, payload in self.accounts():
+                self.db.executemany('INSERT INTO account_claims VALUES(?,?)', [(c, uid) for c in self.claims(payload)])
+            self.db.execute('COMMIT')
+        except BaseException:
+            self.db.execute('ROLLBACK')
+            raise
+
+    def assert_available(self, identity, claims):
+        for claim in claims:
+            if self.db.execute('SELECT 1 FROM account_claims WHERE claim=? AND identity<>? LIMIT 1', (claim, identity)).fetchone():
+                raise ValueError('此森空岛账号或游戏角色已绑定其他 QQ，请先在原绑定中解绑；不会覆盖原账号')
+
+    def conflicted(self, identity):
+        return self.db.execute('SELECT 1 FROM account_claims a JOIN account_claims b ON a.claim=b.claim AND a.identity<>b.identity WHERE a.identity=? LIMIT 1', (identity,)).fetchone() is not None
+
+    def _replace_claims(self, identity, payload):
+        self.db.execute('DELETE FROM account_claims WHERE identity=?', (identity,))
+        self.db.executemany('INSERT INTO account_claims VALUES(?,?)', [(c, identity) for c in self.claims(payload)])
 
     def seal(self, data):
         return self.cipher.encrypt(json.dumps(data, ensure_ascii=False).encode()).decode()
@@ -59,17 +97,23 @@ class Store:
     def accounts(self):
         return [(r['id'], r['version'], self.unseal(r['payload'])) for r in self.db.execute('SELECT * FROM accounts')]
 
-    def put(self, identity, payload, expected=None, max_users=0, finalize=None):
+    def put(self, identity, payload, expected=None, max_users=0, finalize=None, *, legacy_import=False):
         self.db.execute('BEGIN IMMEDIATE')
         try:
             current = self.account(identity)
             actual = current[0] if current else ''
             if expected is not None and expected != actual:
                 raise ValueError('绑定已变化，请重新发起认证')
+            if legacy_import:
+                if current or expected is not None:
+                    raise ValueError('旧绑定已存在，不能覆盖导入')
+            else:
+                self.assert_available(identity, self.claims(payload))
             if not current and max_users > 0 and self.db.execute('SELECT COUNT(*) FROM accounts').fetchone()[0] >= max_users:
                 raise ValueError('绑定名额已满，请联系管理员')
             version = secrets.token_hex(16)
             self.db.execute('INSERT OR REPLACE INTO accounts VALUES(?,?,?)', (identity, version, self.seal(payload)))
+            self._replace_claims(identity, payload)
             if finalize:
                 finalize()
             self.db.execute('COMMIT')
@@ -79,8 +123,21 @@ class Store:
             raise
 
     def update(self, identity, version, payload):
-        return self.db.execute('UPDATE accounts SET payload=? WHERE id=? AND version=?',
-                               (self.seal(payload), identity, version)).rowcount == 1
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            current = self.account(identity)
+            if not current or current[0] != version:
+                self.db.execute('ROLLBACK')
+                return False
+            if self.claims(payload) != self.claims(current[1]):
+                self.assert_available(identity, self.claims(payload))
+            self.db.execute('UPDATE accounts SET payload=? WHERE id=? AND version=?', (self.seal(payload), identity, version))
+            self._replace_claims(identity, payload)
+            self.db.execute('COMMIT')
+            return True
+        except BaseException:
+            self.db.execute('ROLLBACK')
+            raise
 
     def remove(self, identity, version):
         self.db.execute('BEGIN IMMEDIATE')
