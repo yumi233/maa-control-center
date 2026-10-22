@@ -16,3 +16,6 @@ var Execution string
 
 //go:embed 005_activity.sql
 var Activity string
+
+//go:embed 006_bot_control.sql
+var BotControl string

@@ -1,0 +1,10 @@
+name: maa_control
+display_name: MAA 群控
+desc: 按会话、账号和成员权限查看及启停 MAA 任务，不调用模型或任意命令。
+version: v0.5.0
+author: yumi233
+repo: https://github.com/yumi233/maa-control-center
+astrbot_version: ">=4.16,<5"
+support_platforms:
+  - qq_official
+  - qq_official_webhook

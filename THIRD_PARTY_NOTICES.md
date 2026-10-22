@@ -10,3 +10,7 @@ The full font license is distributed at `web/public/fonts/Saira-OFL.txt`.
 Vue: MIT. Vite: MIT. Lucide icons: ISC. Go module dependencies and their licenses
 are recorded in go.mod/go.sum and their upstream modules. This project is independent
 of MaaAssistantArknights and the game publisher and includes no official game assets.
+
+The optional AstrBot adapter is original integration code and imports the installed
+AstrBot plugin API and aiohttp. It does not bundle AstrBot (AGPL-3.0) or MAA;
+aiohttp uses Apache-2.0. Their upstream licenses apply to the separately installed runtimes.

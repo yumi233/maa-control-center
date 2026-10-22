@@ -83,6 +83,22 @@ func Open(path, password, primary, secondary string) (*Store, error) {
 			return fail(e)
 		}
 	}
+	if err = db.QueryRow("SELECT count(*) FROM schema_migrations WHERE version=6").Scan(&migrated); err != nil {
+		return fail(err)
+	}
+	if migrated == 0 {
+		tx, e := db.Begin()
+		if e != nil {
+			return fail(e)
+		}
+		if _, e = tx.Exec(migrations.BotControl); e != nil {
+			tx.Rollback()
+			return fail(e)
+		}
+		if e = tx.Commit(); e != nil {
+			return fail(e)
+		}
+	}
 	if _, err = db.Exec("UPDATE notification_outbox SET state='unknown',detail='服务重启，发送结果待核实；可人工重试' WHERE state='sending'"); err != nil {
 		return fail(err)
 	}

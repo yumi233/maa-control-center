@@ -426,6 +426,10 @@ func (s *Server) updateAccount(w http.ResponseWriter, r *http.Request) {
 			s.result(w, nil, e)
 			return
 		}
+		if _, e = tx.Exec("UPDATE bot_bindings SET enabled=0,revision=revision+1 WHERE account_id=?", a.ID); e != nil {
+			s.result(w, nil, e)
+			return
+		}
 		if _, e = tx.Exec("UPDATE jobs SET state='cancelled',detail='账号转交，原计划取消' WHERE account_id=? AND state='pending'", a.ID); e != nil {
 			s.result(w, nil, e)
 			return

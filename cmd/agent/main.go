@@ -157,7 +157,7 @@ func main() {
 		}
 	}
 	for {
-		h := model.Heartbeat{AgentID: *id, Hostname: host, OS: runtime.GOOS, Version: "0.4.4", Instances: []model.Instance{}}
+		h := model.Heartbeat{AgentID: *id, Hostname: host, OS: runtime.GOOS, Version: "0.5.0", Instances: []model.Instance{}}
 		for _, root := range roots {
 			inst := agent.Discover(root, allowed)
 			inst.ConfigurationWrite = runner.Enabled && len(runner.Roles) > 0
