@@ -46,3 +46,16 @@ func TestActivityDetectsBattleAfterLastSanity(t *testing.T) {
 		t.Fatal("subsequent battle not tracked")
 	}
 }
+
+func TestActivityReportsSkippedInventoryWithoutInventingSanity(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "debug"), 0700)
+	os.WriteFile(filepath.Join(root, "debug", "asst.log"), []byte("[2026-10-23 10:00:00.000][TRC] baseline\n"), 0600)
+	gui := "[2026-10-23 10:00:00.000][INF] baseline\n[2026-10-23 10:04:14.124][WRN][TaskQueueViewModel]     <2> #2：技巧概要·卷3 实际 8/60 不足，预检时已跳过的计划无法在运行中添加，重新运行任务即可刷取\n[2026-10-23 10:04:14.128][INF][TaskQueueViewModel]     <2> 完成任务: 库存保持 (仓库识别)\n"
+	os.WriteFile(filepath.Join(root, "debug", "gui.log"), []byte(gui), 0600)
+	start := time.Date(2026, 10, 23, 10, 0, 0, 0, time.Local)
+	v := Activity(root, start, start.Add(13*time.Minute))
+	if !v.Valid() || !v.LogsComplete || len(v.Issues) != 1 || v.Issues[0] != "inventory_cache_stale" || v.Sanity != nil || len(v.Stages) != 0 {
+		t.Fatalf("wrong skipped report: %+v", v)
+	}
+}

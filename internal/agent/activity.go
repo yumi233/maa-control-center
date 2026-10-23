@@ -117,6 +117,9 @@ func Activity(root string, start, end time.Time) model.RunActivity {
 		}
 	})
 	guiOK := scanActivity(filepath.Join(root, "debug", "gui.log"), 1<<20, start, end, func(line string, _ time.Time) {
+		if strings.Contains(line, "[WRN][TaskQueueViewModel]") && strings.Contains(line, "预检时已跳过的计划无法在运行中添加") && len(v.Issues) == 0 {
+			v.Issues = []string{"inventory_cache_stale"}
+		}
 		m := taskDone.FindStringSubmatch(line)
 		if m == nil {
 			return

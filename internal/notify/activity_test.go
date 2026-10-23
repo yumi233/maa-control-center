@@ -43,6 +43,28 @@ func TestLifecycleMessageSanityLimits(t *testing.T) {
 	}
 }
 
+func TestNoFarmReportShowsActualReasonAndUnknownSanity(t *testing.T) {
+	a := sampleActivity()
+	a.Sanity = nil
+	a.Stages = nil
+	a.Drops = nil
+	a.LastBattleAt = ""
+	a.Issues = []string{"inventory_cache_stale"}
+	msg := Body(Facts{Kind: "job", State: "completed", ID: "job/fixture", Account: "fixture", Time: a.FinishedAt, Activity: a}, "")
+	for _, want := range []string{"旧库存预检已跳过对应刷本计划", "本轮关卡结算 0 次", "理智缺失原因", "结束时理智未知"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("missing %s: %s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "结束时估算") {
+		t.Fatal("invented reading")
+	}
+	a.Issues = []string{"arbitrary message"}
+	if a.Valid() {
+		t.Fatal("accepted arbitrary agent issue text")
+	}
+}
+
 func TestAccountScopeDedupAndDeliveryRecheck(t *testing.T) {
 	st, e := storage.Open(filepath.Join(t.TempDir(), "route.db"), "fixture-password-12345", "", "")
 	if e != nil {

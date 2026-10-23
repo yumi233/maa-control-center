@@ -102,6 +102,7 @@ type RunActivity struct {
 	Sanity       *SanityReading  `json:"sanity,omitempty"`
 	LastBattleAt string          `json:"last_battle_at,omitempty"`
 	LogsComplete bool            `json:"logs_complete"`
+	Issues       []string        `json:"issues,omitempty"`
 }
 
 type Binding struct {

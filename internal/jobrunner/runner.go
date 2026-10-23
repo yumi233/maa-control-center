@@ -218,6 +218,12 @@ func (r *Runner) Step(c Command) Receipt {
 		if e = backup(filepath.Join(r.StateDir, c.ID+".before"), b); e != nil {
 			return save("unknown", "启动前配置备份失败")
 		}
+		if c.Type == "daily" {
+			if e = prepareInventory(root, c.Profile, c.ID, b); e != nil {
+				_ = r.Control.Launch(root)
+				return save("failed", e.Error())
+			}
+		}
 		var doc map[string]json.RawMessage
 		if json.Unmarshal(bytes.TrimPrefix(b, []byte{0xef, 0xbb, 0xbf}), &doc) != nil {
 			return save("failed", "配置 JSON 无效")

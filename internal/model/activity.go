@@ -27,6 +27,9 @@ func (v RunActivity) Valid() bool {
 	if !reading(v.FirstSanity) || !reading(v.Sanity) || (v.LastBattleAt != "" && !inRange(v.LastBattleAt)) || len(v.Tasks) > len(TaskNames) || len(v.Stages) > 64 || len(v.Drops) > 128 {
 		return false
 	}
+	if len(v.Issues) > 1 || (len(v.Issues) == 1 && v.Issues[0] != "inventory_cache_stale") {
+		return false
+	}
 	if v.FirstSanity != nil && v.Sanity != nil && v.FirstSanity.ObservedAt > v.Sanity.ObservedAt {
 		return false
 	}

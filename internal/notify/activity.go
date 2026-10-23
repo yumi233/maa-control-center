@@ -195,10 +195,19 @@ func jobBody(f Facts, intro string) string {
 	}
 	if f.Activity != nil {
 		a := f.Activity
+		if len(a.Issues) > 0 {
+			out += "\n需处理：本次仓库识别发现缺货，但旧库存预检已跳过对应刷本计划；队列结束不能视为补货完成。"
+		}
+		if len(a.Stages) == 0 && a.LogsComplete {
+			out += "\n刷本核对：本轮关卡结算 0 次；队列完成不代表已消耗理智。"
+		}
 		start, _ := time.Parse(time.RFC3339Nano, a.StartedAt)
 		end, _ := time.Parse(time.RFC3339Nano, a.FinishedAt)
 		out += fmt.Sprintf("\n本次用时：%d 分 %d 秒", int(end.Sub(start)/time.Minute), int(end.Sub(start)/time.Second)%60)
 		out += "\n" + sanityText(a) + "\n本次任务结束记录：" + taskText(a.Tasks) + "\n本次关卡结算记录：" + stageText(a.Stages) + "\n本次识别掉落：" + dropText(a.Drops)
+		if a.Sanity == nil {
+			out += "\n理智缺失原因：本轮未取得作战理智回调，不能判断当前是否已回满。"
+		}
 		if !a.LogsComplete {
 			out += "\n本次日志不完整，以上仅为已采集部分。"
 		}
