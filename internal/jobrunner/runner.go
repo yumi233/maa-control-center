@@ -291,6 +291,9 @@ func (r *Runner) Step(c Command) Receipt {
 	if agent.NativeScheduledSince(root, rec.Started) {
 		return save("unknown", "MAA 原有定时介入了本次运行，请核对任务；不会重复启动")
 	}
+	if agent.Disconnected(root, rec.Started, now) {
+		return save("unknown", "模拟器/ADB连接中断，MAA原生重连已失败；本次结果待核实，保留占用防止重复刷本。请恢复连接并核实空闲后解除占用，过期任务不补跑")
+	}
 	if !s.Running {
 		markers := agent.Completions(root, c.InstanceID, rec.Started)
 		if len(markers) > 0 {

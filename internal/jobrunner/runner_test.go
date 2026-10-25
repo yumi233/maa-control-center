@@ -153,3 +153,40 @@ func TestCheckSwitchesProfileWithoutStartingGame(t *testing.T) {
 		t.Fatal("terminal check started game")
 	}
 }
+
+func TestFinalDisconnectRetainsLockUntilVerifiedIdleRelease(t *testing.T) {
+	r, ctrl, c, root, now := fixture(t)
+	r.Step(c)
+	r.Step(c)
+	*now = now.Add(10 * time.Second)
+	line := "[" + now.In(time.Local).Format("2006-01-02 15:04:05.000") + "][ERR][TaskQueueViewModel] <2> 重连失败，连接断开！\n"
+	os.WriteFile(filepath.Join(root, "debug", "gui.log"), []byte(line), 0600)
+	if rec := r.Step(c); rec.State != "unknown" || !strings.Contains(rec.Detail, "ADB连接中断") {
+		t.Fatal("final disconnect was not reported", rec)
+	}
+	r.Step(c)
+	if ctrl.starts != 1 {
+		t.Fatal("disconnected run replayed")
+	}
+	lock := filepath.Join(r.LockDir, c.InstanceID+".lock")
+	if _, e := os.Stat(lock); e != nil {
+		t.Fatal("unknown run lost safety lock", e)
+	}
+	c.Action = "release"
+	if rec := r.Step(c); rec.State != "unknown" {
+		t.Fatal("busy instance was released", rec)
+	}
+	if _, e := os.Stat(lock); e != nil {
+		t.Fatal("busy release removed lock")
+	}
+	ctrl.s.Idle = true
+	if rec := r.Step(c); rec.State != "failed" {
+		t.Fatal("verified idle release failed", rec)
+	}
+	if _, e := os.Stat(lock); !os.IsNotExist(e) {
+		t.Fatal("verified idle lock retained", e)
+	}
+	if ctrl.starts != 1 {
+		t.Fatal("release started another run")
+	}
+}
