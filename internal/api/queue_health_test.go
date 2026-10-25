@@ -105,3 +105,34 @@ func TestHealthyLongRunningQueueDoesNotAlertForNormalSerialization(t *testing.T)
 		t.Fatal("normal shared emulator wait misreported as stuck")
 	}
 }
+
+func TestFreshWaitingReceiptsStillAlertBothAccountChannelsOnce(t *testing.T) {
+	s, h, c, x := executionFixture(t)
+	if e := s.Integrations.Save(assistant.Settings{Channels: []assistant.Channel{
+		{Kind: "telegram", Enabled: true, Token: "fixture-only-token", ChatID: "123"},
+		{Kind: "astrbot", Enabled: true, Token: "fixture-only-token", BaseURL: "http://127.0.0.1:6190", TargetType: "umo", TargetID: "fixture:GroupMessage:group", AllowPrivateHTTP: true, AccountIDs: []string{"secondary"}},
+	}}); e != nil {
+		t.Fatal(e)
+	}
+	if w := call(h, "POST", "/api/v1/jobs", `{"account_id":"secondary","type":"daily"}`, c, x); w.Code != 202 {
+		t.Fatal(w.Body)
+	}
+	agentRequest(h, "GET", "/api/v1/agent/jobs/commands", nil)
+	now := time.Now().UTC().Truncate(time.Second)
+	s.Store.DB.Exec("UPDATE jobs SET state='waiting',created_at=?,updated_at=?", now.Add(-11*time.Minute).Format(time.RFC3339), now.Format(time.RFC3339))
+	for range 3 {
+		if e := s.maintainJobQueue(now); e != nil {
+			t.Fatal(e)
+		}
+	}
+	var count int
+	s.Store.DB.QueryRow("SELECT count(*) FROM notification_outbox WHERE event_id LIKE '%/alert/queue-stalled' AND channel IN ('telegram','astrbot')").Scan(&count)
+	if count != 2 {
+		t.Fatal("fresh waiting receipts hid the stalled queue or produced duplicates", count)
+	}
+	var state string
+	s.Store.DB.QueryRow("SELECT state FROM jobs").Scan(&state)
+	if state != "waiting" {
+		t.Fatal("alert changed execution state", state)
+	}
+}

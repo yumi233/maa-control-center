@@ -23,7 +23,7 @@ func (s *Server) maintainJobQueue(now time.Time) error {
 	rows, e := s.Store.DB.Query(`SELECT j.id,j.account_id,j.owner_id,a.name,j.state,j.detail,j.updated_at,j.created_at
 		FROM jobs j JOIN accounts a ON a.id=j.account_id AND a.owner_id=j.owner_id
 		JOIN users u ON u.id=j.owner_id AND u.disabled=0
-		WHERE j.agent_id=? AND j.type='daily' AND (j.state='unknown' OR j.state='pending')`, s.cfg.AgentID)
+		WHERE j.agent_id=? AND j.type='daily' AND j.state IN ('unknown','pending','waiting')`, s.cfg.AgentID)
 	if e != nil {
 		return e
 	}
@@ -35,9 +35,11 @@ func (s *Server) maintainJobQueue(now time.Time) error {
 			return e
 		}
 		f := notify.Facts{OwnerID: owner, AccountID: account, Account: name, Kind: "job_alert", ID: "job/" + id + "/alert/unknown", State: "unknown", Time: at, Detail: detail, Source: "Windows任务回执与服务器持久队列"}
-		if status == "pending" {
+		if status == "pending" || status == "waiting" {
 			start, parseErr := time.Parse(time.RFC3339Nano, created)
-			if !blocked || parseErr != nil || now.Sub(start) < 10*time.Minute {
+			// waiting is already dispatched but cannot acquire its execution slot.
+			// Fresh waiting receipts do not prove that this queue is progressing.
+			if (status == "pending" && !blocked) || parseErr != nil || now.Sub(start) < 10*time.Minute {
 				continue
 			}
 			f.ID = "job/" + id + "/alert/queue-stalled"

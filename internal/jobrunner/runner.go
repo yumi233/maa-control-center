@@ -105,6 +105,18 @@ func (r *Runner) Step(c Command) Receipt {
 		}
 		exists = true
 	}
+	// A durable terminal receipt remains true even when a later discovery fails.
+	if exists && terminal(rec.Receipt.State) && c.Action != "release" {
+		return rec.Receipt
+	}
+	if !exists {
+		expiry, e := time.Parse(time.RFC3339, c.ExpiresAt)
+		if e != nil || !now.Before(expiry) {
+			out.State = "expired"
+			out.Detail = "排队任务已过期，不补跑旧任务"
+			return out
+		}
+	}
 	inspect := r.Inspect
 	if inspect == nil {
 		inspect = agent.Discover
@@ -120,6 +132,20 @@ func (r *Runner) Step(c Command) Receipt {
 		}
 	}
 	if root == "" || !inst.ProcessVerified || !rules.Supported(inst.Version) {
+		if exists {
+			// Discovery may time out while MAA is still executing. Reporting failed
+			// here would abandon a running journal/lock and strand the next account.
+			// Leave the durable execution untouched so a later verified poll can
+			// collect its real native completion without ever clicking start again.
+			out.State = "unknown"
+			out.Detail = "安装状态暂不可核实，保留本次执行占用等待重新核实；不会重复启动"
+			return out
+		}
+		if root != "" && (!inst.ProcessVerified || inst.Version == "") {
+			out.State = "waiting"
+			out.Detail = "安装信息暂不可核实，等待重新核实；未启动任务，到期不补跑"
+			return out
+		}
 		out.Detail = "需要已核实的 MAA 6.20 安装"
 		return out
 	}
@@ -144,9 +170,6 @@ func (r *Runner) Step(c Command) Receipt {
 			release(lock, c.ID)
 		}
 		return out
-	}
-	if exists && terminal(rec.Receipt.State) && c.Action != "release" {
-		return rec.Receipt
 	}
 	if c.Action == "release" {
 		s, e := r.Control.Probe(root)
