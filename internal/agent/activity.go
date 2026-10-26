@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -29,7 +30,7 @@ func Activity(root string, start, end time.Time) model.RunActivity {
 	tasks := map[string]bool{}
 	var lastBattle time.Time
 	bounded := true
-	coreOK := scanActivity(filepath.Join(root, "debug", "asst.log"), 8<<20, start, end, func(line string, at time.Time) {
+	coreOK := scanActivity(filepath.Join(root, "debug", "asst.log"), 128<<20, start, end, func(line string, at time.Time) {
 		if !strings.Contains(line, "Assistant::append_callback | ") {
 			return
 		}
@@ -61,10 +62,12 @@ func Activity(root string, start, end time.Time) model.RunActivity {
 				observed = t
 			}
 			r := &model.SanityReading{Current: *d.Current, Maximum: d.Max, ObservedAt: observed.UTC().Format(time.RFC3339)}
-			if v.FirstSanity == nil {
+			if v.FirstSanity == nil || r.ObservedAt < v.FirstSanity.ObservedAt {
 				v.FirstSanity = r
 			}
-			v.Sanity = r
+			if v.Sanity == nil || r.ObservedAt >= v.Sanity.ObservedAt {
+				v.Sanity = r
+			}
 		case "StageDrops":
 			if at.After(lastBattle) {
 				lastBattle = at
@@ -116,7 +119,7 @@ func Activity(root string, start, end time.Time) model.RunActivity {
 			}
 		}
 	})
-	guiOK := scanActivity(filepath.Join(root, "debug", "gui.log"), 1<<20, start, end, func(line string, _ time.Time) {
+	guiOK := scanActivity(filepath.Join(root, "debug", "gui.log"), 128<<20, start, end, func(line string, _ time.Time) {
 		if strings.Contains(line, "[WRN][TaskQueueViewModel]") && strings.Contains(line, "预检时已跳过的计划无法在运行中添加") && len(v.Issues) == 0 {
 			v.Issues = []string{"inventory_cache_stale"}
 		}
@@ -159,44 +162,63 @@ func safeActivityText(s string, n int) bool {
 	return len(s) <= n && !strings.ContainsAny(s, "\r\n\x00")
 }
 
+// Read the retained rotation and current file from their beginning, rather than
+// a tail that can discard an hour-long run. Both streams share deduplication.
+// The per-file cap and scanner limit keep reads bounded; missing coverage stays
+// explicitly partial. Never discover arbitrary archives or read private files.
 func scanActivity(path string, limit int64, start, end time.Time, accept func(string, time.Time)) bool {
-	f, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	offset := max(int64(0), st.Size()-limit)
-	if _, err = f.Seek(offset, io.SeekStart); err != nil {
-		return false
-	}
-	s := bufio.NewScanner(f)
-	s.Buffer(make([]byte, 4096), 256<<10)
-	if offset > 0 {
-		s.Scan()
-	}
-	complete := false
+	archived := strings.TrimSuffix(path, filepath.Ext(path)) + ".bak" + filepath.Ext(path)
 	seen := map[string]bool{}
-	for s.Scan() {
-		line := s.Text()
-		if len(line) < 25 || line[0] != '[' {
+	covered, complete := false, true
+	for _, source := range []string{archived, path} {
+		f, err := os.Open(source)
+		if err != nil {
+			if source != archived || !errors.Is(err, os.ErrNotExist) {
+				complete = false
+			}
 			continue
 		}
-		at, e := time.ParseInLocation("2006-01-02 15:04:05.000", line[1:24], time.Local)
-		if e != nil {
+		st, err := f.Stat()
+		if err != nil {
+			f.Close()
+			complete = false
 			continue
 		}
-		if !at.After(start) {
-			complete = true
+		size := min(st.Size(), limit)
+		if st.Size() > limit {
+			complete = false
 		}
-		if at.Before(start) || at.After(end) || seen[line] {
-			continue
+		scanner := bufio.NewScanner(io.LimitReader(f, size))
+		scanner.Buffer(make([]byte, 4096), 256<<10)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if len(line) < 25 || line[0] != '[' {
+				continue
+			}
+			at, err := time.ParseInLocation("2006-01-02 15:04:05.000", line[1:24], time.Local)
+			if err != nil {
+				continue
+			}
+			if !at.After(start) {
+				covered = true
+			}
+			if at.Before(start) || at.After(end) {
+				continue
+			}
+			// Only relevant callbacks and queue records enter the in-memory set.
+			if !strings.Contains(line, "Assistant::append_callback | ") && !strings.Contains(line, "[TaskQueueViewModel]") {
+				continue
+			}
+			if seen[line] {
+				continue
+			}
+			seen[line] = true
+			accept(line, at)
 		}
-		seen[line] = true
-		accept(line, at)
+		if scanner.Err() != nil {
+			complete = false
+		}
+		f.Close()
 	}
-	return complete && s.Err() == nil
+	return covered && complete
 }

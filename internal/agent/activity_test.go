@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -31,6 +32,42 @@ func TestActivityUsesBoundedCallbacksAndCurrentDrops(t *testing.T) {
 	os.Remove(filepath.Join(root, "debug", "gui.log"))
 	if Activity(root, start, end).LogsComplete {
 		t.Fatal("missing log accepted as complete")
+	}
+}
+
+func TestActivityRetainedRotationAndLongRun(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "debug")
+	os.MkdirAll(dir, 0700)
+	start := time.Date(2026, 10, 26, 10, 0, 0, 0, time.Local)
+	callback := func(at, body string) string {
+		return "[2026-10-26 " + at + "][TRC] Assistant::append_callback | SubTaskExtraInfo | " + body + "\n"
+	}
+	reading := callback("10:03:00.000", `{"what":"SanityBeforeStage","details":{"current_sanity":112,"max_sanity":205}}`)
+	drop := callback("10:05:00.000", `{"what":"StageDrops","details":{"stage":{"stageCode":"AP-5"},"drops":[{"itemId":"4006","itemName":"采购凭证","quantity":22}]}}`)
+	last := callback("10:50:00.000", `{"what":"SanityBeforeStage","details":{"current_sanity":4,"max_sanity":205}}`)
+	noise := strings.Repeat("[2026-10-26 10:55:00.000][TRC] unneeded diagnostic detail\n", 180000)
+	archive := "[2026-10-26 09:59:00.000][TRC] baseline\n" + reading + drop + last + noise
+	os.WriteFile(filepath.Join(dir, "asst.bak.log"), []byte(archive), 0600)
+	// Overlap and out-of-order duplicate callbacks must not double count or
+	// replace the latest sanity reading with an older one.
+	os.WriteFile(filepath.Join(dir, "asst.log"), []byte(drop+reading+"[2026-10-26 10:59:00.000][TRC] final\n"), 0600)
+	os.WriteFile(filepath.Join(dir, "gui.bak.log"), []byte("[2026-10-26 09:59:00.000][INF] baseline\n[2026-10-26 10:10:00.000][INF][TaskQueueViewModel] <2> 完成任务: 库存保持\n"), 0600)
+	os.WriteFile(filepath.Join(dir, "gui.log"), []byte("[2026-10-26 10:59:00.000][INF][TaskQueueViewModel] <2> 完成任务: 领取奖励\n"), 0600)
+	v := Activity(root, start, start.Add(time.Hour))
+	if !v.Valid() || !v.LogsComplete || len(v.Stages) != 1 || v.Stages[0].Settlements != 1 || len(v.Drops) != 1 || v.Drops[0].Quantity != 22 || v.FirstSanity.Current != 112 || v.Sanity.Current != 4 || len(v.Tasks) != 2 {
+		t.Fatalf("rotation lost or duplicated evidence: %+v", v)
+	}
+	// A long run without rotation also exceeds the old 8 MiB tail.
+	os.WriteFile(filepath.Join(dir, "asst.log"), []byte(archive), 0600)
+	os.Remove(filepath.Join(dir, "asst.bak.log"))
+	if v = Activity(root, start, start.Add(time.Hour)); !v.LogsComplete || len(v.Stages) != 1 || v.Sanity.Current != 4 {
+		t.Fatalf("long current log lost evidence: %+v", v)
+	}
+	// Missing the portion containing this run's start remains partial.
+	os.WriteFile(filepath.Join(dir, "asst.log"), []byte(last), 0600)
+	if Activity(root, start, start.Add(time.Hour)).LogsComplete {
+		t.Fatal("unavailable retained history reported as complete")
 	}
 }
 
