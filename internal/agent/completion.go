@@ -123,3 +123,15 @@ func NativeScheduledSince(root string, since time.Time) bool {
 	}
 	return false
 }
+
+// Advance only after the server has durably accepted observations.
+func SaveWatchSince(path string, since time.Time) error {
+	b, e := json.Marshal(map[string]time.Time{"since": since})
+	if e != nil {
+		return e
+	}
+	if e = os.WriteFile(path+".tmp", b, 0600); e != nil {
+		return e
+	}
+	return os.Rename(path+".tmp", path)
+}

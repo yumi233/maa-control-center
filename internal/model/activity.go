@@ -27,8 +27,15 @@ func (v RunActivity) Valid() bool {
 	if !reading(v.FirstSanity) || !reading(v.Sanity) || (v.LastBattleAt != "" && !inRange(v.LastBattleAt)) || len(v.Tasks) > len(TaskNames) || len(v.Stages) > 64 || len(v.Drops) > 128 {
 		return false
 	}
-	if len(v.Issues) > 1 || (len(v.Issues) == 1 && v.Issues[0] != "inventory_cache_stale") {
+	if len(v.Issues) > 2 {
 		return false
+	}
+	issues := map[string]bool{}
+	for _, issue := range v.Issues {
+		if (issue != "inventory_cache_stale" && issue != "auto_deploy_unavailable") || issues[issue] {
+			return false
+		}
+		issues[issue] = true
 	}
 	if v.FirstSanity != nil && v.Sanity != nil && v.FirstSanity.ObservedAt > v.Sanity.ObservedAt {
 		return false

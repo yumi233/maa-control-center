@@ -153,3 +153,97 @@ func TestCheckSwitchesProfileWithoutStartingGame(t *testing.T) {
 		t.Fatal("terminal check started game")
 	}
 }
+
+func TestFinalDisconnectRetainsLockUntilVerifiedIdleRelease(t *testing.T) {
+	r, ctrl, c, root, now := fixture(t)
+	r.Step(c)
+	r.Step(c)
+	*now = now.Add(10 * time.Second)
+	line := "[" + now.In(time.Local).Format("2006-01-02 15:04:05.000") + "][ERR][TaskQueueViewModel] <2> 重连失败，连接断开！\n"
+	os.WriteFile(filepath.Join(root, "debug", "gui.log"), []byte(line), 0600)
+	if rec := r.Step(c); rec.State != "unknown" || !strings.Contains(rec.Detail, "ADB连接中断") {
+		t.Fatal("final disconnect was not reported", rec)
+	}
+	r.Step(c)
+	if ctrl.starts != 1 {
+		t.Fatal("disconnected run replayed")
+	}
+	lock := filepath.Join(r.LockDir, c.InstanceID+".lock")
+	if _, e := os.Stat(lock); e != nil {
+		t.Fatal("unknown run lost safety lock", e)
+	}
+	c.Action = "release"
+	if rec := r.Step(c); rec.State != "unknown" {
+		t.Fatal("busy instance was released", rec)
+	}
+	if _, e := os.Stat(lock); e != nil {
+		t.Fatal("busy release removed lock")
+	}
+	ctrl.s.Idle = true
+	if rec := r.Step(c); rec.State != "failed" {
+		t.Fatal("verified idle release failed", rec)
+	}
+	if _, e := os.Stat(lock); !os.IsNotExist(e) {
+		t.Fatal("verified idle lock retained", e)
+	}
+	if ctrl.starts != 1 {
+		t.Fatal("release started another run")
+	}
+}
+
+func TestDiscoveryFailureCannotAbandonActiveJournalOrReplayStart(t *testing.T) {
+	r, ctrl, c, root, now := fixture(t)
+	r.Step(c)
+	r.Step(c)
+	inspect := r.Inspect
+	r.Inspect = func(root string, allowed []string) model.Instance {
+		v := inspect(root, allowed)
+		v.ProcessVerified, v.Version = false, ""
+		return v
+	}
+	if rec := r.Step(c); rec.State != "unknown" {
+		t.Fatal("discovery failure ended running execution", rec)
+	}
+	var durable record
+	b, _ := os.ReadFile(filepath.Join(r.StateDir, c.ID+".json"))
+	json.Unmarshal(b, &durable)
+	if durable.Stage != "running" || durable.Receipt.State != "running" {
+		t.Fatal("active journal lost", durable)
+	}
+	if _, e := os.Stat(filepath.Join(r.LockDir, c.InstanceID+".lock")); e != nil {
+		t.Fatal("safety lock lost", e)
+	}
+	*now = now.Add(10 * time.Second)
+	os.WriteFile(filepath.Join(root, "debug", "gui.log"), []byte("["+now.In(time.Local).Format("2006-01-02 15:04:05.000")+"][INF][TaskQueueViewModel] <1> 任务已全部完成！\n"), 0600)
+	ctrl.s.Idle = true
+	r.Inspect = inspect
+	c.Monitor = true
+	if rec := r.Step(c); rec.State != "completed" {
+		t.Fatal("verified completion did not recover", rec)
+	}
+	r.Inspect = func(string, []string) model.Instance { return model.Instance{} }
+	if rec := r.Step(c); rec.State != "completed" {
+		t.Fatal("later failed discovery replaced durable terminal receipt", rec)
+	}
+	if ctrl.starts != 1 {
+		t.Fatal("execution replayed", ctrl.starts)
+	}
+	if _, e := os.Stat(filepath.Join(r.LockDir, c.InstanceID+".lock")); !os.IsNotExist(e) {
+		t.Fatal("completed lock retained", e)
+	}
+}
+
+func TestUnstartedDiscoveryFailureWaitsButCannotOutliveExpiry(t *testing.T) {
+	r, ctrl, c, _, now := fixture(t)
+	r.Inspect = func(string, []string) model.Instance { return model.Instance{ID: c.InstanceID} }
+	if rec := r.Step(c); rec.State != "waiting" {
+		t.Fatal("temporary discovery ended an unstarted task", rec)
+	}
+	*now = now.Add(2 * time.Hour)
+	if rec := r.Step(c); rec.State != "expired" {
+		t.Fatal("unverified waiting task outlived its expiry", rec)
+	}
+	if ctrl.starts != 0 || ctrl.launches != 0 {
+		t.Fatal("unverified task started")
+	}
+}

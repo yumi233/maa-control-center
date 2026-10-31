@@ -62,12 +62,13 @@ type Instance struct {
 }
 
 type Heartbeat struct {
-	AgentID     string       `json:"agent_id"`
-	Hostname    string       `json:"hostname"`
-	OS          string       `json:"os"`
-	Version     string       `json:"version"`
-	Instances   []Instance   `json:"instances"`
-	Completions []Completion `json:"completions,omitempty"`
+	Recruitments []Recruitment `json:"recruitments,omitempty"`
+	AgentID      string        `json:"agent_id"`
+	Hostname     string        `json:"hostname"`
+	OS           string        `json:"os"`
+	Version      string        `json:"version"`
+	Instances    []Instance    `json:"instances"`
+	Completions  []Completion  `json:"completions,omitempty"`
 }
 
 type Completion struct {

@@ -19,3 +19,6 @@ var Activity string
 
 //go:embed 006_bot_control.sql
 var BotControl string
+
+//go:embed 007_recruitment.sql
+var Recruitment string

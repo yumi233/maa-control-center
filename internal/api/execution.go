@@ -337,6 +337,9 @@ func (s *Server) enqueueJob(a *model.Account, creator, key, schedule string, at 
 
 // TickSchedules claims each occurrence transactionally; advancing next_run_at never replays missed days.
 func (s *Server) TickSchedules(now time.Time) error {
+	if e := s.maintainJobQueue(now); e != nil {
+		return e
+	}
 	rows, e := s.Store.DB.Query("SELECT id,account_id,owner_id,name,hour,minute,weekdays,timezone,next_run_at FROM scheduled_tasks WHERE enabled=1 AND next_run_at<=? ORDER BY next_run_at,id LIMIT 128", now.UTC().Format(time.RFC3339))
 	if e != nil {
 		return e
@@ -422,6 +425,10 @@ func (s *Server) TickSchedules(now time.Time) error {
 	return nil
 }
 func (s *Server) jobCommands(w http.ResponseWriter, r *http.Request) {
+	if e := s.maintainJobQueue(time.Now()); e != nil {
+		s.result(w, nil, e)
+		return
+	}
 	// One active execution per Windows Agent also serializes shared emulators across MAA installations.
 	var active string
 	_ = s.Store.DB.QueryRow("SELECT id FROM jobs WHERE agent_id=? AND state IN "+activeJobs+" ORDER BY created_at,id LIMIT 1", s.cfg.AgentID).Scan(&active)
@@ -563,7 +570,7 @@ func (s *Server) jobReceipt(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if (terminal || receipt.State == "running") && j.Type != "check" {
+	if (terminal || receipt.State == "running" || receipt.State == "unknown") && j.Type != "check" {
 		// The same exact GUI marker may reach heartbeat before or after this receipt.
 		// Claim it in this transaction so the generic watcher cannot notify twice.
 		if c := receipt.Completion; c != nil {
@@ -577,6 +584,9 @@ func (s *Server) jobReceipt(w http.ResponseWriter, r *http.Request) {
 		f := notify.Facts{OwnerID: j.OwnerID, ID: "job/" + j.ID, Kind: "job", AccountID: j.AccountID, Account: name, State: receipt.State, Time: receipt.Time, Detail: receipt.Detail, StartedAt: receipt.StartedAt, Activity: receipt.Activity, Source: "Windows原生任务入口、对应配置档、队列日志与窗口状态"}
 		if receipt.State == "running" {
 			f.ID += "/started"
+		} else if receipt.State == "unknown" {
+			f.ID += "/alert/unknown"
+			f.Kind = "job_alert"
 		} else {
 			f.Today, e = notify.Today(tx, j.OwnerID, j.AccountID, receipt.Time)
 			if e != nil {
