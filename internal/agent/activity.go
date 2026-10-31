@@ -47,6 +47,21 @@ func Activity(root string, start, end time.Time) model.RunActivity {
 			return
 		}
 		switch e.What {
+		case "ExceededLimit":
+			var d struct {
+				Task string `json:"task"`
+			}
+			if json.Unmarshal(e.Details, &d) == nil && (d.Task == "UsePrts" || strings.HasSuffix(d.Task, "@UsePrts")) {
+				found := false
+				for _, i := range v.Issues {
+					if i == "auto_deploy_unavailable" {
+						found = true
+					}
+				}
+				if !found {
+					v.Issues = append(v.Issues, "auto_deploy_unavailable")
+				}
+			}
 		case "SanityBeforeStage":
 			var d struct {
 				Current *int   `json:"current_sanity"`
@@ -120,8 +135,16 @@ func Activity(root string, start, end time.Time) model.RunActivity {
 		}
 	})
 	guiOK := scanActivity(filepath.Join(root, "debug", "gui.log"), 128<<20, start, end, func(line string, _ time.Time) {
-		if strings.Contains(line, "[WRN][TaskQueueViewModel]") && strings.Contains(line, "预检时已跳过的计划无法在运行中添加") && len(v.Issues) == 0 {
-			v.Issues = []string{"inventory_cache_stale"}
+		if strings.Contains(line, "[WRN][TaskQueueViewModel]") && strings.Contains(line, "预检时已跳过的计划无法在运行中添加") {
+			found := false
+			for _, i := range v.Issues {
+				if i == "inventory_cache_stale" {
+					found = true
+				}
+			}
+			if !found {
+				v.Issues = append(v.Issues, "inventory_cache_stale")
+			}
 		}
 		m := taskDone.FindStringSubmatch(line)
 		if m == nil {

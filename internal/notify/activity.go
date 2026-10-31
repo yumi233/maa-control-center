@@ -195,8 +195,13 @@ func jobBody(f Facts, intro string) string {
 	}
 	if f.Activity != nil {
 		a := f.Activity
-		if len(a.Issues) > 0 {
-			out += "\n需处理：本次仓库识别发现缺货，但旧库存预检已跳过对应刷本计划；队列结束不能视为补货完成。"
+		for _, issue := range a.Issues {
+			switch issue {
+			case "inventory_cache_stale":
+				out += "\n需处理：本次仓库识别发现缺货，但旧库存预检已跳过对应刷本计划；队列结束不能视为补货完成。"
+			case "auto_deploy_unavailable":
+				out += "\n需处理：本轮无法启用代理指挥，反复点击后达到上限。请检查该关代理记录是否已解锁及界面识别；库存保持未完成，不能据此认定理智已消耗。"
+			}
 		}
 		if len(a.Stages) == 0 && a.LogsComplete {
 			out += "\n刷本核对：本轮关卡结算 0 次；队列完成不代表已消耗理智。"

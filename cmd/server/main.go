@@ -15,6 +15,7 @@ import (
 
 	"github.com/yumi233/maa-control-center/internal/api"
 	"github.com/yumi233/maa-control-center/internal/model"
+	"github.com/yumi233/maa-control-center/internal/notify"
 	"github.com/yumi233/maa-control-center/internal/storage"
 	"github.com/yumi233/maa-control-center/internal/ui"
 	"github.com/yumi233/maa-control-center/internal/vault"
@@ -40,7 +41,7 @@ func main() {
 		if json.Unmarshal(b, &settings) != nil {
 			log.Fatal("invalid private configuration")
 		}
-		allowed := map[string]bool{"MAACC_SKLAND_UPSTREAM": true, "MAACC_PUBLIC_URL": true, "MAACC_ALLOWED_ORIGINS": true, "MAACC_LISTEN": true, "MAACC_DB": true, "MAACC_ADMIN_PASSWORD": true, "MAACC_AGENT_ID": true, "MAACC_AGENT_TOKEN": true, "MAACC_TLS_CERT": true, "MAACC_TLS_KEY": true, "MAACC_PRIMARY_NAME": true, "MAACC_SECONDARY_NAME": true, "MAACC_BINDINGS_FILE": true}
+		allowed := map[string]bool{"MAACC_TELEGRAM_PROXY": true, "MAACC_SKLAND_UPSTREAM": true, "MAACC_PUBLIC_URL": true, "MAACC_ALLOWED_ORIGINS": true, "MAACC_LISTEN": true, "MAACC_DB": true, "MAACC_ADMIN_PASSWORD": true, "MAACC_AGENT_ID": true, "MAACC_AGENT_TOKEN": true, "MAACC_TLS_CERT": true, "MAACC_TLS_KEY": true, "MAACC_PRIMARY_NAME": true, "MAACC_SECONDARY_NAME": true, "MAACC_BINDINGS_FILE": true}
 		for k, v := range settings {
 			if !allowed[k] {
 				log.Fatal("unsupported private configuration key")
@@ -90,6 +91,13 @@ func main() {
 		log.Fatal("cannot initialize encrypted integration storage")
 	}
 	s := api.New(store, api.Config{PublicURL: publicURL, AgentID: env("MAACC_AGENT_ID", "windows-agent"), AgentToken: os.Getenv("MAACC_AGENT_TOKEN"), Assets: ui.Files(), Vault: secrets, AllowedOrigins: origins})
+	if proxy := os.Getenv("MAACC_TELEGRAM_PROXY"); proxy != "" {
+		client, err := notify.TelegramProxyClient(proxy)
+		if err != nil {
+			log.Fatal("invalid Telegram egress configuration")
+		}
+		s.Notifications.TelegramHTTP = client
+	}
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	defer stopWorker()
 	go s.Worker(workerCtx)
@@ -103,7 +111,7 @@ func main() {
 		defer cancel()
 		_ = srv.Shutdown(ctx)
 	}()
-	log.Printf("MAA Control Center 0.5.3 | reviewed configuration | listen=%s", *addr)
+	log.Printf("MAA Control Center 0.5.5 | reviewed configuration | listen=%s", *addr)
 	if cert != "" {
 		err = srv.ListenAndServeTLS(cert, key)
 	} else {

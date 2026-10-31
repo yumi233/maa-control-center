@@ -96,3 +96,16 @@ func TestActivityReportsSkippedInventoryWithoutInventingSanity(t *testing.T) {
 		t.Fatalf("wrong skipped report: %+v", v)
 	}
 }
+
+func TestAutoDeployFailureIsReportedWithoutInventingSanity(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "debug"), 0700)
+	start := time.Date(2026, 10, 31, 8, 0, 0, 0, time.Local)
+	line := "[2026-10-31 08:03:45.000][INF] Assistant::append_callback | SubTaskExtraInfo | " + `{"what":"ExceededLimit","taskchain":"Fight","details":{"task":"UsePrts","exec_times":10,"max_times":10}}` + "\n"
+	os.WriteFile(filepath.Join(root, "debug/asst.log"), []byte("[2026-10-31 08:00:00.000][INF] baseline\n"+line+line), 0600)
+	os.WriteFile(filepath.Join(root, "debug/gui.log"), []byte("[2026-10-31 08:00:00.000][INF] baseline\n"), 0600)
+	a := Activity(root, start, start.Add(time.Hour))
+	if !a.Valid() || len(a.Issues) != 1 || a.Issues[0] != "auto_deploy_unavailable" || a.Sanity != nil || len(a.Stages) != 0 {
+		t.Fatal(a)
+	}
+}

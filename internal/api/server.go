@@ -157,7 +157,7 @@ func (s *Server) Handler() http.Handler {
 			problem(w, 503, "database_unavailable", "数据库不可用")
 			return
 		}
-		send(w, 200, map[string]any{"status": "ok", "skland_binding": sklandEnabled(), "version": "0.5.3", "mode": "reviewed_configuration"})
+		send(w, 200, map[string]any{"status": "ok", "skland_binding": sklandEnabled(), "version": "0.5.5", "mode": "reviewed_configuration"})
 	})
 	m.HandleFunc("POST /api/v1/auth/login", s.login)
 	m.HandleFunc("GET /api/v1/auth/session", s.protect(func(w http.ResponseWriter, r *http.Request) {
@@ -235,7 +235,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("POST /api/v1/accounts/{id}/policies/preview", s.protect(s.preview))
 	m.HandleFunc("PUT /api/v1/accounts/{id}/policies", s.protect(s.readOnly))
 	m.HandleFunc("GET /api/v1/settings", s.protect(func(w http.ResponseWriter, r *http.Request) {
-		send(w, 200, map[string]any{"mode": "reviewed_configuration", "version": "0.5.3", "database": "SQLite WAL", "agent_paired": len(s.cfg.AgentToken) >= 32, "scheduler_owner": "web_and_existing_maa", "remote_control": true, "configuration_sync": true})
+		send(w, 200, map[string]any{"mode": "reviewed_configuration", "version": "0.5.5", "database": "SQLite WAL", "agent_paired": len(s.cfg.AgentToken) >= 32, "scheduler_owner": "web_and_existing_maa", "remote_control": true, "configuration_sync": true})
 	}))
 	m.HandleFunc("POST /api/v1/agent/heartbeat", s.heartbeat)
 	// Production dispatch is intentionally unavailable until installed-version capability checks pass.
@@ -346,7 +346,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		s.result(w, nil, err)
 		return
 	}
-	send(w, 200, map[string]any{"accounts": a, "agents": agents, "events": events, "jobs": func() []Job { v, _ := s.jobsFor(r); return v }(), "server_time": time.Now().UTC().Format(time.RFC3339), "mode": "reviewed_configuration", "version": "0.5.3"})
+	send(w, 200, map[string]any{"accounts": a, "agents": agents, "events": events, "jobs": func() []Job { v, _ := s.jobsFor(r); return v }(), "server_time": time.Now().UTC().Format(time.RFC3339), "mode": "reviewed_configuration", "version": "0.5.5"})
 }
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if !s.originOK(r) {
@@ -444,6 +444,10 @@ func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.observedCompletions(h); err != nil {
 		problem(w, 500, "completion_store_failed", "任务结束事件暂未保存，将由下次心跳重试")
+		return
+	}
+	if err := s.observedRecruitments(h); err != nil {
+		problem(w, 422, "recruitment_store_failed", "公招提醒暂未保存，将由下次心跳重试")
 		return
 	}
 	send(w, 200, map[string]any{"accepted": true, "mode": "read_only", "server_time": time.Now().UTC().Format(time.RFC3339)})

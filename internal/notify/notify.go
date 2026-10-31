@@ -24,24 +24,26 @@ import (
 )
 
 type Facts struct {
-	AccountID string             `json:"account_id,omitempty"`
-	StartedAt string             `json:"started_at,omitempty"`
-	Activity  *model.RunActivity `json:"activity,omitempty"`
-	Today     *DayActivity       `json:"today,omitempty"`
-	OwnerID   string             `json:"owner_id,omitempty"`
-	ID        string             `json:"id"`
-	Kind      string             `json:"kind"`
-	Account   string             `json:"account"`
-	State     string             `json:"state"`
-	Time      string             `json:"time"`
-	Detail    string             `json:"detail"`
-	Source    string             `json:"source"`
+	Recruitment *model.Recruitment `json:"recruitment,omitempty"`
+	AccountID   string             `json:"account_id,omitempty"`
+	StartedAt   string             `json:"started_at,omitempty"`
+	Activity    *model.RunActivity `json:"activity,omitempty"`
+	Today       *DayActivity       `json:"today,omitempty"`
+	OwnerID     string             `json:"owner_id,omitempty"`
+	ID          string             `json:"id"`
+	Kind        string             `json:"kind"`
+	Account     string             `json:"account"`
+	State       string             `json:"state"`
+	Time        string             `json:"time"`
+	Detail      string             `json:"detail"`
+	Source      string             `json:"source"`
 }
 type Service struct {
 	Settings     assistant.SettingsStore
 	API          assistant.ClientAPI
 	HTTP         *http.Client
 	TelegramBase string
+	TelegramHTTP *http.Client
 	mu           sync.Mutex
 }
 
@@ -79,6 +81,9 @@ func Enqueue(db Execer, channels []assistant.Channel, f Facts) error {
 var friendly = map[string]string{"applied": "配置已应用并校验", "completed": "MAA 任务队列已完成", "completed_with_errors": "MAA 任务队列已结束，存在错误", "test": "通知连接测试", "blocked": "配置未应用", "conflict": "配置已变化，方案已拒绝", "expired": "方案已过期", "rejected": "方案未通过校验", "unknown": "结果待人工核实"}
 
 func Body(f Facts, intro string) string {
+	if f.Kind == "recruitment" && f.Recruitment != nil {
+		return recruitmentBody(f)
+	}
 	if f.Kind == "job_alert" {
 		title := "挂机异常，结果待核实"
 		if f.State == "queue_stalled" {
@@ -104,7 +109,7 @@ var intros = map[string]string{"warm": "来看看这次的进展吧。", "cheerf
 
 func (s *Service) Message(ctx context.Context, cfg assistant.Settings, f Facts) string {
 	intro := ""
-	if f.Kind != "test" && cfg.Creative && cfg.Provider.APIKey != "" {
+	if f.Kind != "test" && f.Kind != "recruitment" && cfg.Creative && cfg.Provider.APIKey != "" {
 		var v struct {
 			Tone string `json:"tone"`
 		}
@@ -177,6 +182,9 @@ func (s *Service) Send(ctx context.Context, c assistant.Channel, text string) (s
 		req.Header.Set("Authorization", "Bearer "+c.Token)
 	}
 	h := s.HTTP
+	if c.Kind == "telegram" && s.TelegramHTTP != nil {
+		h = s.TelegramHTTP
+	}
 	if h == nil {
 		h = assistant.NetworkClient(15*time.Second, (c.Kind == "qq" || c.Kind == "astrbot") && c.AllowPrivateHTTP && !c.PublicOnly)
 	}

@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -156,19 +157,38 @@ func main() {
 			log.Print("completion watcher unavailable; configuration unchanged")
 		}
 	}
+	var recruitSince time.Time
+	recruitWatch := filepath.Join(stateDir, "recruitment-watch.json")
+	if stateDir != "" {
+		recruitSince, _ = agent.WatchSince(recruitWatch)
+	}
 	for {
-		h := model.Heartbeat{AgentID: *id, Hostname: host, OS: runtime.GOOS, Version: "0.5.4", Instances: []model.Instance{}}
+		observedUntil := time.Now()
+		if !recruitSince.IsZero() && recruitSince.Before(observedUntil.Add(-48*time.Hour)) {
+			recruitSince = observedUntil.Add(-48 * time.Hour)
+		}
+		h := model.Heartbeat{AgentID: *id, Hostname: host, OS: runtime.GOOS, Version: "0.5.5", Instances: []model.Instance{}}
 		for _, root := range roots {
 			inst := agent.Discover(root, allowed)
 			inst.ConfigurationWrite = runner.Enabled && len(runner.Roles) > 0
 			inst.TaskExecution = executionEnabled && len(runner.Roles) > 0
 			h.Instances = append(h.Instances, inst)
+			if !recruitSince.IsZero() {
+				h.Recruitments = append(h.Recruitments, tasks.Recruitments(root, inst.ID, recruitSince, observedUntil)...)
+			}
 			if !watchSince.IsZero() {
 				h.Completions = append(h.Completions, agent.Completions(root, inst.ID, watchSince)...)
 			}
 		}
 		if len(h.Completions) > 20 {
 			h.Completions = h.Completions[len(h.Completions)-20:]
+		}
+		sort.Slice(h.Recruitments, func(i, j int) bool { return h.Recruitments[i].ObservedAt < h.Recruitments[j].ObservedAt })
+		recruitNext := observedUntil.Add(-2 * time.Minute)
+		if len(h.Recruitments) > 20 {
+			h.Recruitments = h.Recruitments[:20]
+			recruitNext, _ = time.Parse(time.RFC3339Nano, h.Recruitments[19].ObservedAt)
+			recruitNext = recruitNext.Add(-time.Nanosecond)
 		}
 		data, err := json.Marshal(h)
 		if err != nil {
@@ -198,6 +218,11 @@ func main() {
 				log.Print(err)
 			} else {
 				log.Printf("heartbeat accepted; installations=%d", len(h.Instances))
+				if !recruitSince.IsZero() && recruitNext.After(recruitSince) {
+					if agent.SaveWatchSince(recruitWatch, recruitNext) == nil {
+						recruitSince = recruitNext
+					}
+				}
 
 			}
 		}
